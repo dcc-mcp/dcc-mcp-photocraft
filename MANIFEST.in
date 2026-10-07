@@ -1,0 +1,4 @@
+include LICENSE THIRD_PARTY_NOTICES.md README.md install.md
+recursive-include scripts *.py
+recursive-include tests *.py
+recursive-include src/dcc_mcp_photocraft *.json *.md *.yaml *.py

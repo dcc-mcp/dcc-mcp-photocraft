@@ -1,0 +1,270 @@
+{
+  "command_list": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "properties": {
+      "enabled_only": {
+        "default": null,
+        "description": "Only commands that can run right now.",
+        "type": [
+          "boolean",
+          "null"
+        ]
+      },
+      "filter": {
+        "default": null,
+        "description": "Only commands whose id or label contains this text (case-insensitive).",
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "type": "object"
+  },
+  "command_run": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "properties": {
+      "id": {
+        "description": "Command id, e.g. `layer.new.layer`, `filter.blur.gaussian`.",
+        "type": "string"
+      },
+      "params": {
+        "default": null,
+        "description": "Command parameters as a JSON object (see the `params` doc in `command_list`)."
+      }
+    },
+    "required": [
+      "id"
+    ],
+    "type": "object"
+  },
+  "doc_close": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "properties": {
+      "index": {
+        "default": null,
+        "description": "Document index from `session_list` (default: the active document).",
+        "format": "uint",
+        "minimum": 0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      }
+    },
+    "type": "object"
+  },
+  "doc_export": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "properties": {
+      "format": {
+        "default": null,
+        "description": "Format override as an extension (pcraft, psd, png, jpg, tif, webp, exr, \u2026).",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "index": {
+        "default": null,
+        "format": "uint",
+        "minimum": 0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "path": {
+        "default": null,
+        "description": "Forward-slash relative target beneath the configured automation write root.\nThe extension selects the format. Omit to save to the document's own relative path.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "quality": {
+        "default": null,
+        "description": "JPEG quality 1..100 for lossy exports.",
+        "format": "uint8",
+        "maximum": 255,
+        "minimum": 0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      }
+    },
+    "type": "object"
+  },
+  "doc_inspect": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "properties": {
+      "index": {
+        "default": null,
+        "description": "Document index from `session_list` (default: the active document).",
+        "format": "uint",
+        "minimum": 0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      }
+    },
+    "type": "object"
+  },
+  "doc_new": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "properties": {
+      "background": {
+        "default": null,
+        "description": "white | black | transparent | #rrggbb",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "depth": {
+        "default": null,
+        "description": "8 | 16 | 32",
+        "format": "uint32",
+        "minimum": 0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "height": {
+        "default": null,
+        "format": "uint32",
+        "minimum": 0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "mode": {
+        "default": null,
+        "description": "rgb | gray | cmyk | lab",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "name": {
+        "default": null,
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "width": {
+        "default": null,
+        "format": "uint32",
+        "minimum": 0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      }
+    },
+    "type": "object"
+  },
+  "doc_open": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "properties": {
+      "path": {
+        "description": "Forward-slash relative path beneath the configured automation read root.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "path"
+    ],
+    "type": "object"
+  },
+  "doc_render_preview": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "properties": {
+      "index": {
+        "default": null,
+        "format": "uint",
+        "minimum": 0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "max_side": {
+        "default": null,
+        "description": "Longest side of the returned PNG in pixels (default 1024, 0 = full size).",
+        "format": "uint32",
+        "minimum": 0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      }
+    },
+    "type": "object"
+  },
+  "doc_save": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "properties": {
+      "format": {
+        "default": null,
+        "description": "Format override as an extension (pcraft, psd, png, jpg, tif, webp, exr, \u2026).",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "index": {
+        "default": null,
+        "format": "uint",
+        "minimum": 0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      },
+      "path": {
+        "default": null,
+        "description": "Forward-slash relative target beneath the configured automation write root.\nThe extension selects the format. Omit to save to the document's own relative path.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "quality": {
+        "default": null,
+        "description": "JPEG quality 1..100 for lossy exports.",
+        "format": "uint8",
+        "maximum": 255,
+        "minimum": 0,
+        "type": [
+          "integer",
+          "null"
+        ]
+      }
+    },
+    "type": "object"
+  },
+  "doc_select": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "properties": {
+      "index": {
+        "format": "uint",
+        "minimum": 0,
+        "type": "integer"
+      }
+    },
+    "required": [
+      "index"
+    ],
+    "type": "object"
+  },
+  "session_list": {
+    "properties": {},
+    "type": "object"
+  }
+}
