@@ -15,6 +15,8 @@ import argparse
 import hashlib
 import json
 import platform
+import random
+import sys
 from datetime import UTC, datetime
 from importlib.metadata import version
 from pathlib import Path
@@ -25,6 +27,50 @@ from dcc_mcp_photocraft.errors import AdapterError
 from dcc_mcp_photocraft.facade import PhotoCraftFacade
 from dcc_mcp_photocraft.paths import Workspace
 from dcc_mcp_photocraft.transport import ManagedPhotoCraft
+
+# These expectations are authored independently of the advertised tool list.
+# Adding a registered tool without an observable scenario must fail coverage.
+TOOL_POSTCONDITIONS = {
+    "connection_status": "real_host_connected",
+    "document_session": "final_session_empty",
+    "document_new": "new_document_dimensions",
+    "document_open": "import_dimensions",
+    "document_inspect": "native_roundtrip_layer_state",
+    "document_save_as": "native_roundtrip_pixels",
+    "layer_create": "layer_properties_readback",
+    "layer_set": "layer_properties_readback",
+    "mask_set": "hidden_adjustment_restores_baseline_pixels",
+    "adjustment_create": "adjustment_changes_pixels",
+    "text_create": "text_changes_rendered_pixels",
+    "document_resize": "resize_readback",
+    "preview": "preview_decoded_independently",
+    "export_image": "native_roundtrip_pixels",
+    "undo": "undo_preserves_editable_layers",
+    "capabilities_query": "capability_catalog_query",
+    "layer_select": "selected_layer_readback",
+    "layer_duplicate": "duplicate_is_independent_pixel_layer",
+    "layer_arrange": "reorder_below_opaque_base_changes_pixels",
+    "selection_rect": "selection_rectangle_readback",
+    "selection_clear": "selection_cleared",
+    "mask_paint": "mask_paint_reveals_only_local_pixels",
+    "mask_enabled": "mask_disable_restores_original_pixels",
+    "image_crop": "crop_is_exact_pixel_slice",
+    "canvas_resize": "canvas_expansion_preserves_pixels_and_alpha",
+    "layer_translate": "translation_exact_pixels",
+    "layer_transform": "transform_scale_exact_pixels",
+    "layer_import": "import_composite_exact_pixels",
+    "adjustment_tone": "all_tone_kinds_have_visible_effect",
+    "fill_layer": "solid_fill_exact_pixels",
+    "layer_group": "group_is_editable_and_nonflattening",
+    "layer_delete": "deleting_group_restores_prior_pixels",
+    "selection_all": "selection_all_canvas_readback",
+    "selection_invert": "inverted_selection_fill_exact_pixels",
+    "selection_fill": "selection_fill_exact_pixels",
+    "document_sample_pixel": "native_sample_agrees_with_export",
+    "noise_reduce": "noise_reduce_lowers_noise_and_retains_markers",
+    "noise_despeckle": "despeckle_reduces_noise_in_untreated_region",
+    "selection_from_mask": "painted_mask_selection_limits_noise",
+}
 
 
 class E2EFailure(Exception):
@@ -58,6 +104,101 @@ def make_fixture(path):
     image.save(path, format="PNG")
 
 
+def make_fixtures(directory):
+    make_fixture(directory / "gradient.png")
+    # Binary alpha avoids making the oracle depend on the engine's blending
+    # color space. Four opaque corners retain the full content bounds.
+    plan = Image.new("RGBA", (96, 64))
+    colors = ((255, 0, 0, 255), (0, 255, 0, 255), (0, 0, 255, 255), (255, 255, 0, 255))
+    plan.putdata(
+        [
+            (0, 0, 0, 0) if 40 <= x < 56 and 24 <= y < 40 else colors[(y >= 32) * 2 + (x >= 48)]
+            for y in range(64)
+            for x in range(96)
+        ]
+    )
+    plan.save(directory / "plan.png")
+    tones = Image.new("RGB", (50, 16))
+    tones.putdata(
+        [
+            (value, value, value)
+            for _ in range(16)
+            for value in (0, 64, 128, 192, 255)
+            for _ in range(10)
+        ]
+    )
+    tones.save(directory / "tones.png")
+    rng = random.Random(20261007)
+    noise = Image.new("RGB", (128, 96))
+    noise.putdata(
+        [(value, value, value) for value in (128 + rng.randint(-24, 24) for _ in range(128 * 96))]
+    )
+    noise.paste((255, 255, 255), (8, 8, 24, 24))
+    noise.paste((0, 0, 0), (104, 72, 120, 88))
+    noise.save(directory / "noise.png")
+    return {p.name: digest(p) for p in sorted(directory.iterdir()) if p.is_file()}
+
+
+def source_manifest():
+    root = Path(__file__).resolve().parent.parent
+    paths = sorted(
+        path
+        for base in (root / "src", root / "scripts")
+        for path in base.rglob("*")
+        if path.is_file() and path.suffix in {".py", ".json", ".yaml", ".md"}
+    )
+    hashes = {p.relative_to(root).as_posix(): digest(p) for p in paths}
+    normalized = {
+        p.relative_to(root).as_posix(): hashlib.sha256(
+            p.read_bytes().replace(b"\r\n", b"\n")
+        ).hexdigest()
+        for p in paths
+    }
+    return {
+        "files": hashes,
+        "sha256": hashlib.sha256(json.dumps(hashes, sort_keys=True).encode()).hexdigest(),
+        "lf_normalized_files": normalized,
+        "lf_normalized_sha256": hashlib.sha256(
+            json.dumps(normalized, sort_keys=True).encode()
+        ).hexdigest(),
+    }
+
+
+def verify_coverage(run, advertised):
+    calls = {step["tool"] for step in run.report["steps"] if step["status"] == "passed"}
+    checks = {check["name"] for check in run.report["checks"] if check["passed"]}
+    run.check(
+        "advertised_tools_match_authored_scenarios", set(advertised) == set(TOOL_POSTCONDITIONS)
+    )
+    run.check(
+        "every_tool_has_successful_call_and_postcondition",
+        all(
+            tool in calls and postcondition in checks
+            for tool, postcondition in TOOL_POSTCONDITIONS.items()
+        ),
+        tool_postconditions=TOOL_POSTCONDITIONS,
+    )
+
+
+def load_rgba(path, expected_size):
+    with Image.open(path) as image:
+        image.load()
+        require(image.format == "PNG", "independent_png_format")
+        require(image.size == expected_size, "independent_png_dimensions")
+        return image.convert("RGBA")
+
+
+def pixels_equal(actual, expected):
+    # Image.getbbox() alone on RGBA differences can miss RGB-only changes.
+    return actual.size == expected.size and actual.tobytes() == expected.tobytes()
+
+
+def composite(base, overlay, position):
+    expected = base.convert("RGBA").copy()
+    expected.alpha_composite(overlay, position)
+    return expected
+
+
 def load_rgb(path, expected_size):
     with Image.open(path) as image:
         image.load()
@@ -70,8 +211,28 @@ def load_rgb(path, expected_size):
 
 def layer_signature(document):
     """The persistence contract excludes transient history and selection state."""
-    fields = ("id", "name", "kind", "opacity", "visible", "hasMask", "text", "adjustment")
-    return [{key: layer[key] for key in fields if key in layer} for layer in document["layers"]]
+    fields = (
+        "id",
+        "name",
+        "kind",
+        "opacity",
+        "visible",
+        "hasMask",
+        "text",
+        "adjustment",
+        "bounds",
+        "blend",
+        "fill",
+        "clipped",
+        "linkGroup",
+    )
+    result = []
+    for layer in document["layers"]:
+        item = {key: layer[key] for key in fields if key in layer}
+        if "children" in layer:
+            item["children"] = layer_signature({"layers": layer["children"]})
+        result.append(item)
+    return result
 
 
 def public_document(document):
@@ -106,6 +267,21 @@ class LiveRun:
         self.report["checks"].append({"name": name, "passed": bool(condition), **evidence})
         require(condition, name)
 
+    def reject(self, tool, **arguments):
+        result = self.facade.invoke(tool, **arguments)
+        meta = result.get("_meta", {}).get("photocraft", {})
+        require(result.get("success") is False, "expected_rejection_" + tool)
+        require(meta.get("indeterminate") is False, "rejection_mutated_" + tool)
+        self.report["steps"].append(
+            {
+                "tool": tool,
+                "arguments": arguments,
+                "status": "expected_rejection",
+                "error": result.get("error"),
+            }
+        )
+        return result
+
 
 def exercise(run, workspace):
     call, check = run.call, run.check
@@ -129,6 +305,15 @@ def exercise(run, workspace):
     source_layer = doc["layers"][0]["id"]
     call("export_image", path="baseline.png")
     baseline = load_rgb(workspace.output_root / "baseline.png", (384, 256))
+
+    # Resize is intentionally tested before masks or type are introduced:
+    # unknown native mask/type allocation bounds are rejected by the facade.
+    original_signature = layer_signature(doc)
+    doc = call("document_resize", width=192, height=128)["document"]
+    check("resize_readback", (doc["width"], doc["height"]) == (192, 128))
+    doc = call("undo")["document"]
+    check("undo_restores_dimensions", (doc["width"], doc["height"]) == (384, 256))
+    check("undo_preserves_editable_layers", layer_signature(doc) == original_signature)
 
     doc = call("adjustment_create", kind="vibrance", vibrance=40, saturation=15)["document"]
     check(
@@ -180,13 +365,10 @@ def exercise(run, workspace):
         and changed["opacity"] == 0.5
         and changed["visible"] is False,
     )
-    original_signature = layer_signature(doc)
-
-    doc = call("document_resize", width=192, height=128)["document"]
-    check("resize_readback", (doc["width"], doc["height"]) == (192, 128))
+    layered_signature = layer_signature(doc)
+    call("layer_set", layer=overlay, opacity=0.25)
     doc = call("undo")["document"]
-    check("undo_restores_dimensions", (doc["width"], doc["height"]) == (384, 256))
-    check("undo_preserves_editable_layers", layer_signature(doc) == original_signature)
+    check("undo_preserves_layered_document", layer_signature(doc) == layered_signature)
     doc = call("document_inspect")["document"]
     before = public_document(doc)
 
@@ -245,22 +427,25 @@ def main():
         },
         "steps": [],
         "checks": [],
+        "source": source_manifest(),
     }
     transport = None
     workspace = None
-    fixture = None
-    before_hash = None
+    fixture_hashes = {}
     try:
         inputs = root / "inputs"
         inputs.mkdir()
-        fixture = inputs / "gradient.png"
-        make_fixture(fixture)
-        before_hash = digest(fixture)
+        fixture_hashes = make_fixtures(inputs)
         workspace = Workspace(inputs, root / "outputs")
         report["executable_sha256"] = digest(args.executable)
         transport = ManagedPhotoCraft(args.executable, workspace)
         transport.start()
-        exercise(LiveRun(PhotoCraftFacade(transport), report), workspace)
+        run = LiveRun(PhotoCraftFacade(transport), report)
+        exercise(run, workspace)
+        from extension_cases import exercise_extensions
+
+        exercise_extensions(run, workspace)
+        verify_coverage(run, run.call("connection_status")["tools"])
         report["status"] = "passed"
     except (E2EFailure, AdapterError) as error:
         report["status"] = "failed"
@@ -277,16 +462,15 @@ def main():
             except (AdapterError, E2EFailure) as error:
                 report["status"] = "failed"
                 report["shutdown_error"] = str(error)
-        if fixture is not None and before_hash is not None:
-            after_hash = digest(fixture)
-            unchanged = before_hash == after_hash
+        if fixture_hashes:
+            after_hashes = {name: digest(root / "inputs" / name) for name in fixture_hashes}
+            unchanged = fixture_hashes == after_hashes
             report["checks"].append(
                 {
                     "name": "input_sha256_unchanged",
                     "passed": unchanged,
-                    "path": "inputs/gradient.png",
-                    "before": before_hash,
-                    "after": after_hash,
+                    "before": fixture_hashes,
+                    "after": after_hashes,
                 }
             )
             if not unchanged:
@@ -296,6 +480,10 @@ def main():
                 json.dumps(workspace.manifest(), indent=2) + "\n", encoding="utf-8"
             )
         report["completed_utc"] = datetime.now(UTC).isoformat()
+        if source_manifest()["sha256"] != report["source"]["sha256"]:
+            report["status"] = "failed"
+            report["source_changed_during_run"] = True
+            report.setdefault("error", "source_changed_during_run")
         (root / "report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     print(
         json.dumps(
@@ -313,4 +501,7 @@ def main():
 
 
 if __name__ == "__main__":
+    # Shared extension scenarios import this module. Keep the exception type
+    # identical when this file is executed as a script rather than imported.
+    sys.modules["headless_e2e"] = sys.modules[__name__]
     raise SystemExit(main())

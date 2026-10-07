@@ -25,7 +25,7 @@ where = ["src"]
 license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md"]
 
 [tool.setuptools.package-data]
-dcc_mcp_photocraft = ["upstream_schemas.json", "skills/**/*.md", "skills/**/*.yaml", "skills/**/*.py"]
+dcc_mcp_photocraft = ["upstream_schemas.json", "capabilities.json", "skills/**/*.md", "skills/**/*.yaml", "skills/**/*.py"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

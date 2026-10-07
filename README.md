@@ -12,21 +12,50 @@ This is an experimental source candidate, not a software release. Follow the
 
 ## Supported surface
 
-The `photocraft-document` skill contains 15 tools:
+The `photocraft-document` skill contains 39 typed tools. The complete
+[versioned capability matrix](docs/capability-matrix.md) and
+[command inventory](docs/capability-inventory.csv) distinguish upstream APIs,
+authorization, implemented adapter subsets and validation. The 748 upstream
+command IDs are not 748 implemented adapter tools.
 
 | Tools | Purpose |
 | --- | --- |
-| `connection_status`, `document_session` | Version/capabilities, artifact manifest; list/select/close documents |
+| `connection_status`, `capabilities_query`, `document_session` | Version, searchable audited capability inventory, artifact manifest; list/select/close documents |
 | `document_new`, `document_open`, `document_inspect`, `document_save_as` | RGB8 documents, staged PNG/JPEG input, native save/reopen and readback |
 | `layer_create`, `layer_set`, `mask_set` | Pixel layers, name/opacity/visibility and simple masks |
 | `adjustment_create`, `text_create`, `document_resize` | Editable hue/saturation or vibrance, type layers, image size |
 | `preview`, `export_image`, `undo` | Independently checked PNG previews, PNG/JPEG exports and edit undo |
+| `layer_import`, `layer_select`, `layer_duplicate`, `layer_arrange` | Import staged raster pixels through the official session clipboard; select, duplicate and reorder layers |
+| `layer_translate`, `layer_transform`, `image_crop`, `canvas_resize` | Bounded pixel-layer placement and affine transforms, exact crop and transparent canvas extension |
+| `selection_rect`, `selection_clear`, `selection_all`, `selection_invert`, `selection_fill`, `selection_from_mask` | Explicit bounded selections, existing editable mask coverage and selected-pixel fill |
+| `mask_paint`, `mask_enabled` | Local mask painting and explicit mask enable/disable; `mask_set` also supports selection-based masks |
+| `adjustment_tone`, `fill_layer`, `layer_group`, `layer_delete`, `document_sample_pixel` | Editable brightness/contrast, exposure, levels and curves; solid/gradient fills; explicit group/delete and pixel readback |
+| `noise_reduce`, `noise_despeckle` | Bounded native pixel filters on an explicit active Pixel layer, with optional selection coverage |
 
 Native `.pcraft` outputs retain editable layers. Arbitrary external `.pcraft`
 inputs are deliberately deferred: the upstream native reader has a much larger
 decompression budget than this adapter. Reopening is allowed only for native
 outputs created by the current session whose SHA-256 still matches. PSD
 round-trip compatibility is not claimed.
+
+Raster layer import creates a Pixel layer, not a linked or embedded smart
+object. It is a serialized multi-step operation, not an atomic transaction.
+The source raster is staged by hash, copied through an owned temporary
+document, pasted into the captured target and read back. No ambient file-place
+command is enabled. Prepare geometry before masks and tonal/type layers:
+geometry tools conservatively reject unsupported layer, mask, selection,
+channel and linked-layer states whose true allocation bounds cannot be proven.
+Canvas extension is transparent; document scaling is not a crop or a layer
+transform. See the typed schemas for each operation's exact parameter subset.
+
+For local denoising, load an editable mask into the selection with
+`selection_from_mask` before filtering and require the returned
+`document.hasSelection` to be true. An empty mask can leave no selection;
+stop the local-filter step in that case, because a filter with no selection
+processes the whole layer. The filter changes raster pixels and
+supports undo; it does not create a Smart Filter or use Blender AOVs. Preserve
+the original layer or input for before/after comparison. See the
+[noise and coverage boundaries](docs/capability-matrix.md#noise-reduction-and-local-coverage).
 
 There is no raw `command_run`, arbitrary JSON engine command, script execution,
 desktop bridge, UI automation, cloud service or upstream job/cancel facade.
@@ -57,7 +86,10 @@ No reconnect or mutation replay occurs. The SDK closes stdin and terminates
 the managed child on shutdown. A failure after an admitted mutation reports
 `indeterminate=true`; a successful native call followed by failed readback is
 also indeterminate. Readback is completed even if cancellation arrives after
-the edit. Do not rerun an uncertain operation automatically.
+the edit. An indeterminate operation additionally blocks subsequent tool work
+except connection status, document inspection, capability lookup and session
+listing. `connection_status.requires_recovery` and the error's stage identify
+this condition. Do not rerun an uncertain operation automatically.
 
 The operator supplies disjoint input and initially empty output directories.
 PNG/JPEG inputs are validated and copied by digest into the output directory's
@@ -68,9 +100,11 @@ exist, and new subdirectories must be created by the operator. Workspace roots
 must be operator-owned and not concurrently modified by another writer; these
 path checks are not an OS sandbox against a hostile local process.
 
-Limits include 64 MiB input/artifact bytes, 16 megapixels, four documents,
-64 layers, 2048-pixel previews, 256 text characters, 128-point type and a
-conservative text rectangle budget using document DPI. The trusted native
+Limits include 64 MiB input/artifact bytes, 16 megapixels per surface, four
+documents, 64 layers including nested layers, eight group levels, 2048-pixel
+previews, 256 text characters, 128-point type and a conservative text rectangle
+budget using document DPI. Editing preflight also limits aggregate surface
+allocation to four times the per-surface pixel budget. The trusted native
 process is not assigned an OS memory quota. Preserve returned warnings and
 the manifest from `connection_status`; the smoke scripts also save a manifest.
 The service does not yet restore unsaved state or manifests across restarts.
@@ -87,9 +121,13 @@ python scripts/headless_e2e.py --executable /path/to/photocraft-cli --workspace 
 python scripts/core_cli_e2e.py --executable /path/to/photocraft-cli --cli /path/to/dcc-mcp-cli --workspace /path/to/fresh-cli-evidence
 ```
 
-The live smoke uses deterministic generated input and records 15-tool editing,
+The live smoke uses separate deterministic raster inputs and exercises every
+declared typed tool, with dedicated extension scenarios. It records
 input checksums, native save/close/reopen, preserved layer structure and exact
-rendered pixels after reopen. Contract tests use a fake MCP process to exercise
+rendered pixels after reopen, imported alpha, non-stretched crop/canvas changes,
+layer placement, mask toggles, regional noise filtering and further editing
+after native reopen.
+Contract tests use a fake MCP process to exercise
 faults and cleanup; they do not substitute for real software acceptance.
 
 The Core/CLI smoke runs those editing checks through official CLI discovery,
