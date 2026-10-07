@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ['3.11', '3.12']
+    runs-on: ${{ matrix.os }}
+    env:
+      PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
+      DCC_MCP_DISABLE_DEFAULT_SKILL_PATHS: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: python -m pip install -e ".[test]"
+      - run: python -m ruff check src scripts tests
+      - run: python -m ruff format --check src scripts tests
+      - run: python -m pytest -q --basetemp=runtime/tests
+      - run: python -m build
+      - name: Validate packaged skill declarations
+        run: python -c "from dcc_mcp_core import validate_skill; r=validate_skill('src/dcc_mcp_photocraft/skills/photocraft-document'); assert r.is_clean, r.issues"
