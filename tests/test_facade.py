@@ -46,20 +46,20 @@ def test_mandatory_readback_survives_cancel_after_edit(monkeypatch):
 
     def check():
         cancel_checks.append(True)
-        if calls:
+        if "command_run" in calls:
             raise RuntimeError("cancel after admitted edit")
 
     def call(name, arguments, **kwargs):
         calls.append(name)
-        value = "{}" if name == "command_run" else '{"width": 16, "height": 16}'
+        value = "{}" if name == "command_run" else '{"width": 16, "height": 16,"canUndo":true}'
         return {"content": [{"type": "text", "text": value}]}
 
     facade = PhotoCraftFacade(SimpleNamespace(workspace=None, call=call))
     monkeypatch.setattr(module, "check_dcc_cancelled", check)
     result = facade.invoke("undo")
     assert result["success"] is True
-    assert calls == ["command_run", "doc_inspect"]
-    assert len(cancel_checks) == 2  # invocation + pre-admission, not post-edit
+    assert calls == ["doc_inspect", "command_run", "doc_inspect"]
+    assert len(cancel_checks) == 3  # invocation + preflight + pre-admission, not post-edit
 
 
 def test_text_budget_uses_native_resolution_before_dispatch(monkeypatch):

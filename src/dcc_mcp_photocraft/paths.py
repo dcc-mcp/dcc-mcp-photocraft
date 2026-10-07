@@ -94,8 +94,16 @@ class Workspace:
 
             try:
                 with Image.open(BytesIO(data)) as img:
-                    if img.width * img.height > MAX_PIXELS:
+                    if img.width * img.height > MAX_PIXELS or max(img.size) > 4096:
                         raise AdapterError("resource_limit")
+                    expected = "PNG" if source.suffix.lower() == ".png" else "JPEG"
+                    if (
+                        img.format != expected
+                        or getattr(img, "n_frames", 1) != 1
+                        or img.mode not in {"RGB", "RGBA", "L", "LA", "P"}
+                    ):
+                        raise AdapterError("unsupported_image_format")
+                    dimensions = [img.width, img.height]
                     img.verify()
             except AdapterError:
                 raise
@@ -113,7 +121,9 @@ class Workspace:
         else:
             with staged.open("xb") as stream:
                 stream.write(data)
-        self.imports.append({"path": relative, "sha256": digest, "bytes": len(data)})
+        self.imports.append(
+            {"path": relative, "sha256": digest, "bytes": len(data), "dimensions": dimensions}
+        )
         return staged.relative_to(self.output_root).as_posix()
 
     def mark_created(self, relative: str) -> dict:

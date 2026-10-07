@@ -1,12 +1,17 @@
 # Third-party notices
 
-`src/dcc_mcp_photocraft/upstream_schemas.json` is the JSON Schema snapshot
-of 11 tools exposed by PhotoCraft v0.2.0, commit
-`ad863217386440ca968fccc9bfff65ba24e61142`. Source:
+`src/dcc_mcp_photocraft/upstream_schemas.json` contains the JSON Schema
+snapshot of 11 upstream tools consumed by this adapter. Descriptions and
+parameter documentation in `src/dcc_mcp_photocraft/capabilities.json` and
+`docs/capability-inventory.csv` are derived from PhotoCraft's MCP, command
+registry and CLI. These snapshots use PhotoCraft v0.2.0, commit
+`ad863217386440ca968fccc9bfff65ba24e61142`. Sources:
 https://github.com/storytold/photocraft/tree/v0.2.0/crates/automation
+https://github.com/storytold/photocraft/tree/v0.2.0/crates/engine
+https://github.com/storytold/photocraft/tree/v0.2.0/apps/photocraft-cli
 
 PhotoCraft offers its code under MIT OR Apache-2.0. This distribution selects
-the MIT option for the schema descriptions and preserves its notice below.
+the MIT option for these metadata descriptions and preserves its notice below.
 No upstream executable, logo, icon or brand asset is included.
 
 MIT License

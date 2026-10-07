@@ -16,6 +16,7 @@ import hashlib
 import json
 import os
 import queue
+import re
 import socket
 import subprocess
 import sys
@@ -25,14 +26,17 @@ from importlib.metadata import version
 from pathlib import Path
 from types import SimpleNamespace
 
-from headless_e2e import exercise, make_fixture
+from headless_e2e import (
+    TOOL_POSTCONDITIONS,
+    E2EFailure,
+    exercise,
+    make_fixtures,
+    source_manifest,
+    verify_coverage,
+)
 from jsonschema import Draft202012Validator
 
 from dcc_mcp_photocraft import __version__
-
-
-class E2EFailure(Exception):
-    """Stable public-safe failure code."""
 
 
 def require(condition, code):
@@ -42,21 +46,6 @@ def require(condition, code):
 
 def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
-def source_manifest():
-    root = Path(__file__).resolve().parent.parent
-    files = sorted(
-        path
-        for base in (root / "src", root / "scripts")
-        for path in base.rglob("*")
-        if path.is_file() and path.suffix in {".py", ".json", ".yaml", ".md"}
-    )
-    hashes = {path.relative_to(root).as_posix(): digest(path) for path in files}
-    return {
-        "files": hashes,
-        "sha256": hashlib.sha256(json.dumps(hashes, sort_keys=True).encode()).hexdigest(),
-    }
 
 
 def isolated_env(workspace):
@@ -71,6 +60,10 @@ def isolated_env(workspace):
         "LOCALAPPDATA": "localappdata",
         "HOME": "home",
         "USERPROFILE": "home",
+        "XDG_CONFIG_HOME": "xdg-config",
+        "XDG_CACHE_HOME": "xdg-cache",
+        "XDG_DATA_HOME": "xdg-data",
+        "XDG_STATE_HOME": "xdg-state",
         "DCC_MCP_REGISTRY_DIR": "registry",
         "DCC_MCP_LOG_DIR": "logs",
     }.items():
@@ -156,6 +149,26 @@ class CliRun:
         self.cli, self.env, self.workspace, self.report = cli, env, workspace, report
         self.slugs = {}
         self.schemas = {}
+        self.execution = {}
+
+    def record_version(self):
+        result = subprocess.run(
+            [str(self.cli), "--version"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=self.env,
+            cwd=self.workspace,
+            timeout=15,
+        )
+        match = re.fullmatch(r"dcc-mcp-cli (\d+\.\d+\.\d+)", result.stdout.strip())
+        require(result.returncode == 0 and match is not None, "cli_version_probe_failed")
+        self.report["versions"]["dcc_mcp_cli"] = match.group(1)
+        self.check(
+            "cli_core_minor_compatible",
+            match.group(1).split(".")[:2] == self.report["versions"]["dcc_mcp_core"].split(".")[:2],
+        )
 
     def command(self, *arguments, payload=None, allow_failure=False):
         index = len(self.report["commands"])
@@ -202,22 +215,29 @@ class CliRun:
             self.schemas[name] = self.command("describe", self.slugs[name])["tool"]
         return self.schemas[name]
 
-    def call(self, tool, **arguments):
+    def _invoke(self, tool, arguments, *, rejecting=False):
         description = self.describe(tool)
         validator = Draft202012Validator(description["inputSchema"])
         require(validator.is_valid(arguments), "input_schema_validation_" + tool)
         step = {"tool": tool, "arguments": arguments, "schema_validated": True, "status": "running"}
         self.report["steps"].append(step)
-        options = ["--wait", "--wait-timeout-secs", "60"] if tool != "connection_status" else []
+        asynchronous = self.execution[tool] == "async"
+        options = ["--wait", "--wait-timeout-secs", "60"] if asynchronous else []
         response = self.command(
-            "call", self.slugs[tool], "--json-file", "-", *options, payload=arguments
+            "call",
+            self.slugs[tool],
+            "--json-file",
+            "-",
+            *options,
+            payload=arguments,
+            allow_failure=rejecting,
         )
         require(response.get("success") is True, "cli_call_envelope_" + tool)
         require(response.get("control_route") == "local_mcp_direct", "unexpected_control_route")
         payload = response.get("result", {}).get("structuredContent", {})
         require(response["result"].get("isError") is False, "mcp_error_" + tool)
         step["request_id"] = response.get("request_id")
-        if tool != "connection_status":
+        if asynchronous:
             wait = response.get("wait", {})
             require(
                 wait.get("terminal") is True
@@ -240,10 +260,24 @@ class CliRun:
                 job_resubmitted=False,
             )
             payload = payload["result"]
+        if rejecting:
+            require(payload.get("success") is False, "expected_rejection_" + tool)
+            require(
+                payload.get("_meta", {}).get("photocraft", {}).get("indeterminate") is False,
+                "rejection_mutated_" + tool,
+            )
+            step.update(status="expected_rejection", error=payload.get("error"))
+            return payload
         require(payload.get("success") is True, "adapter_failed_" + tool)
         require(isinstance(payload.get("context"), dict), "adapter_context_" + tool)
         step["status"] = "passed"
         return payload["context"]
+
+    def call(self, tool, **arguments):
+        return self._invoke(tool, arguments)
+
+    def reject(self, tool, **arguments):
+        return self._invoke(tool, arguments, rejecting=True)
 
 
 def run(args):
@@ -255,8 +289,7 @@ def run(args):
     for name in ("inputs", "outputs", "diagnostics"):
         (args.workspace / name).mkdir()
     env = isolated_env(args.workspace)
-    make_fixture(args.workspace / "inputs" / "gradient.png")
-    fixture_hash = digest(args.workspace / "inputs" / "gradient.png")
+    fixture_hashes = make_fixtures(args.workspace / "inputs")
     report = {
         "schema_version": 1,
         "route": "official_cli_local_mcp_direct_to_core_to_photocraft_headless",
@@ -282,6 +315,7 @@ def run(args):
     service = None
     diagnostics = (args.workspace / "diagnostics" / "server.log").open("w", encoding="utf-8")
     try:
+        cli.record_version()
         service = subprocess.Popen(
             [
                 sys.executable,
@@ -371,10 +405,18 @@ def run(args):
         load = cli.command("load-skill", "--json", json.dumps(candidate["next_step"]["arguments"]))
         cli.check(
             "typed_skill_loaded",
-            load.get("loaded") is True
-            and load.get("partial") is False
-            and load.get("tool_count") == 15,
+            load.get("loaded") is True and load.get("partial") is False,
         )
+        registered = {
+            tool["name"].removeprefix("photocraft_document__"): tool for tool in load["tools"]
+        }
+        cli.check(
+            "registered_tools_match_authored_scenarios", set(registered) == set(TOOL_POSTCONDITIONS)
+        )
+        cli.execution = {
+            name: tool["metadata"]["dcc"]["execution"] for name, tool in registered.items()
+        }
+        cli.check("all_execution_modes_explicit", set(cli.execution.values()) <= {"sync", "async"})
         loaded = cli.command(
             "search", "--dcc-type", "photocraft", "--instance-id", instance_id, "--limit", "100"
         )
@@ -384,12 +426,10 @@ def run(args):
         cli.slugs = {
             hit["backend_tool"]: hit["slug"] for hit in loaded["hits"] if hit.get("kind") == "tool"
         }
-        from dcc_mcp_photocraft.facade import PhotoCraftFacade
-
         cli.check(
             "all_typed_tools_discovered",
-            set(PhotoCraftFacade.TOOL_NAMES) <= cli.slugs.keys(),
-            tool_count=len(PhotoCraftFacade.TOOL_NAMES),
+            set(registered) <= cli.slugs.keys(),
+            tool_count=len(registered),
         )
         exercise(
             cli,
@@ -397,10 +437,15 @@ def run(args):
                 input_root=args.workspace / "inputs", output_root=args.workspace / "outputs"
             ),
         )
-        cli.check(
-            "all_typed_tools_called",
-            set(PhotoCraftFacade.TOOL_NAMES) == {step["tool"] for step in report["steps"]},
+        from extension_cases import exercise_extensions
+
+        exercise_extensions(
+            cli,
+            SimpleNamespace(
+                input_root=args.workspace / "inputs", output_root=args.workspace / "outputs"
+            ),
         )
+        verify_coverage(cli, cli.call("connection_status")["tools"])
         invalid = cli.command(
             "call",
             cli.slugs["document_new"],
@@ -445,7 +490,11 @@ def run(args):
         cli.check("rejected_calls_do_not_create_documents", session["documents"] == [])
         cli.check(
             "input_sha256_unchanged",
-            digest(args.workspace / "inputs" / "gradient.png") == fixture_hash,
+            all(
+                digest(args.workspace / "inputs" / name) == expected
+                for name, expected in fixture_hashes.items()
+            ),
+            input_sha256=fixture_hashes,
         )
         report["status"] = "passed"
     except (E2EFailure, subprocess.TimeoutExpired) as error:
@@ -484,7 +533,8 @@ def run(args):
         )
         if source_manifest()["sha256"] != report["source"]["sha256"]:
             report["status"] = "failed"
-            report["error"] = "source_changed_during_run"
+            report["source_changed_during_run"] = True
+            report.setdefault("error", "source_changed_during_run")
         (args.workspace / "report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
     print(
         json.dumps(

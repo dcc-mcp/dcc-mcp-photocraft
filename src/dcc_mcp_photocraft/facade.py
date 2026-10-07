@@ -11,12 +11,14 @@ from dcc_mcp_core import current_job_id
 from dcc_mcp_core.skills_helper import check_dcc_cancelled, skill_error, skill_success
 from PIL import Image
 
+from .editing import EditingTools
 from .errors import AdapterError
 from .paths import MAX_PIXELS
+from .safety import MAX_LAYERS, MAX_TOTAL_PIXELS, bounds, budget, resize_budget
+from .tonal import TonalTools
 
 ACTIVE_FACADE = contextvars.ContextVar("photocraft_facade")
 MAX_DOCUMENTS = 4
-MAX_LAYERS = 64
 
 
 def _number(value, minimum, maximum, *, integer=False):
@@ -43,23 +45,27 @@ def _color(value):
     return value
 
 
-class PhotoCraftFacade:
+class PhotoCraftFacade(EditingTools, TonalTools):
     TOOL_NAMES = (
-        "connection_status",
-        "document_session",
-        "document_new",
-        "document_open",
-        "document_inspect",
-        "document_save_as",
-        "layer_create",
-        "layer_set",
-        "mask_set",
-        "adjustment_create",
-        "text_create",
-        "document_resize",
-        "preview",
-        "export_image",
-        "undo",
+        (
+            "connection_status",
+            "document_session",
+            "document_new",
+            "document_open",
+            "document_inspect",
+            "document_save_as",
+            "layer_create",
+            "layer_set",
+            "mask_set",
+            "adjustment_create",
+            "text_create",
+            "document_resize",
+            "preview",
+            "export_image",
+            "undo",
+        )
+        + EditingTools.TOOL_NAMES
+        + TonalTools.TOOL_NAMES
     )
 
     def __init__(self, transport):
@@ -67,35 +73,73 @@ class PhotoCraftFacade:
         self.workspace = transport.workspace
         self._lock = threading.RLock()
         self._mutated = False
+        self._indeterminate = False
+        self._operation_stage = None
 
     def invoke(self, tool_name, **arguments):
         with self._lock:
             self._mutated = False
+            self._operation_stage = None
             try:
                 check_dcc_cancelled()
                 if tool_name not in self.TOOL_NAMES:
                     raise AdapterError("unsupported_tool")
+                diagnostic = tool_name in {
+                    "connection_status",
+                    "document_inspect",
+                    "capabilities_query",
+                } or (tool_name == "document_session" and arguments.get("action", "list") == "list")
+                if self._indeterminate and not diagnostic:
+                    raise AdapterError("session_requires_recovery", indeterminate=True)
                 result = getattr(self, tool_name)(**arguments)
                 return skill_success("PhotoCraft operation completed.", **result)
             except AdapterError as error:
                 unknown = error.indeterminate or self._mutated
+                self._indeterminate |= unknown
                 return skill_error(
                     "PhotoCraft operation failed; inspect recorded artifacts before recovery.",
                     error.code,
-                    _meta={"photocraft": {"indeterminate": unknown, "retry_safe": False}},
+                    _meta={
+                        "photocraft": {
+                            "indeterminate": unknown,
+                            "retry_safe": False,
+                            "stage": self._operation_stage,
+                        }
+                    },
                 )
             except (TypeError, ValueError):
+                self._indeterminate |= self._mutated
                 return skill_error(
                     "Arguments or readback do not match the typed operation.",
                     "readback_failed" if self._mutated else "invalid_arguments",
                     _meta={"photocraft": {"indeterminate": self._mutated, "retry_safe": False}},
                 )
+            except Exception:
+                if not self._mutated:
+                    raise
+                self._indeterminate = True
+                return skill_error(
+                    "An admitted operation could not finish its mandatory readback.",
+                    "operation_failed_after_edit",
+                    _meta={
+                        "photocraft": {
+                            "indeterminate": True,
+                            "retry_safe": False,
+                            "stage": self._operation_stage,
+                        }
+                    },
+                )
 
     def _call(self, name, arguments, *, mutating=False):
         # Once an edit is admitted, finish mandatory readback even if a Core
         # cancellation arrives. Native PhotoCraft calls cannot be pre-empted.
-        if not self._mutated:
-            check_dcc_cancelled()
+        if mutating or not self._mutated:
+            try:
+                check_dcc_cancelled()
+            except Exception:
+                if self._mutated:
+                    raise AdapterError("cancelled_after_partial_edit", indeterminate=True) from None
+                raise
         if mutating:
             self._mutated = True
         job_id = current_job_id()
@@ -145,9 +189,10 @@ class PhotoCraftFacade:
         return doc
 
     def _edit(self, command, params):
-        self._json("command_run", {"id": command, "params": params}, mutating=True)
+        native = self._json("command_run", {"id": command, "params": params}, mutating=True)
         doc = self._inspect()
-        return {"document": doc, "readback": True}
+        budget(doc)
+        return {"document": doc, "command_result": native, "readback": True}
 
     def _document_budget(self):
         state = self._json("session_list")
@@ -157,17 +202,18 @@ class PhotoCraftFacade:
 
     def _layer_budget(self):
         doc = self._inspect()
-        if len(doc.get("layers", [])) >= MAX_LAYERS:
-            raise AdapterError("layer_limit")
+        budget(doc, extra_layers=1)
         return doc
 
     def connection_status(self):
         return {
             **self.transport.status(),
             "manifest": self.workspace.manifest(),
+            "requires_recovery": self._indeterminate,
             "tools": list(self.TOOL_NAMES),
             "limits": {
                 "max_pixels": MAX_PIXELS,
+                "max_total_pixels": MAX_TOTAL_PIXELS,
                 "max_documents": MAX_DOCUMENTS,
                 "max_layers": MAX_LAYERS,
             },
@@ -179,6 +225,9 @@ class PhotoCraftFacade:
         if action not in {"select", "close"}:
             raise AdapterError("invalid_arguments")
         _number(index, 0, MAX_DOCUMENTS - 1, integer=True)
+        before = self._json("session_list")
+        if index >= len(before.get("documents", [])):
+            raise AdapterError("document_index_unavailable")
         self._json("doc_" + action, {"index": index}, mutating=True)
         return {"session": self._json("session_list"), "readback": True}
 
@@ -244,8 +293,13 @@ class PhotoCraftFacade:
         self._layer_budget()
         return self._edit("layer.new.layer", {"name": name})
 
-    def layer_set(self, layer, name=None, opacity=None, visible=None):
+    def layer_set(
+        self, layer, name=None, opacity=None, visible=None, fill=None, blend=None, clipped=None
+    ):
         _number(layer, 0, 2**32 - 1, integer=True)
+        from .safety import find_layer
+
+        find_layer(self._inspect(), layer)
         props = {"layer": layer}
         if name is not None:
             props["name"] = _string(name)
@@ -255,15 +309,45 @@ class PhotoCraftFacade:
             if not isinstance(visible, bool):
                 raise AdapterError("invalid_arguments")
             props["visible"] = visible
+        if fill is not None:
+            props["fill"] = _number(fill, 0, 1)
+        if blend is not None:
+            from .editing import enum
+
+            props["blend"] = enum(
+                blend, {"normal", "multiply", "screen", "overlay", "darken", "lighten"}
+            )
+        if clipped is not None:
+            if not isinstance(clipped, bool):
+                raise AdapterError("invalid_arguments")
+            props["clipped"] = clipped
         if len(props) == 1:
             raise AdapterError("invalid_arguments")
         return self._edit("layer.setProps", props)
 
-    def mask_set(self, mode="reveal_all"):
-        commands = {"reveal_all": "revealAll", "hide_all": "hideAll", "remove": "delete"}
+    def mask_set(self, mode="reveal_all", layer=None):
+        from .safety import find_layer
+
+        commands = {
+            "reveal_all": "revealAll",
+            "hide_all": "hideAll",
+            "remove": "delete",
+            "reveal_selection": "revealSelection",
+            "hide_selection": "hideSelection",
+        }
         if mode not in commands:
             raise AdapterError("invalid_arguments")
-        return self._edit("layer.layerMask." + commands[mode], {})
+        doc = self._inspect()
+        layer = doc.get("activeLayer") if layer is None else layer
+        _number(layer, 0, 2**32 - 1, integer=True)
+        item, _ = find_layer(doc, layer)
+        budget(doc, extra_pixels=MAX_PIXELS if not item.get("hasMask") and mode != "remove" else 0)
+        if mode.endswith("selection") and not doc.get("hasSelection"):
+            raise AdapterError("selection_required")
+        result = self._edit("layer.layerMask." + commands[mode], {"layer": layer})
+        self._verify(find_layer(result["document"], layer)[0].get("hasMask") == (mode != "remove"))
+        result["verified"] = True
+        return result
 
     def adjustment_create(self, kind, saturation=0, hue=0, vibrance=0):
         _number(saturation, -100, 100)
@@ -288,12 +372,26 @@ class PhotoCraftFacade:
         dpi = _number(doc.get("resolution", 72), 1, 1200)
         # Upstream allocates the text ink rectangle before canvas clipping.
         # Bound a deliberately conservative glyph rectangle, not just canvas.
-        lines = text.splitlines() or [text]
+        lines = text.expandtabs(8).splitlines() or [text]
         if (
             len(lines) > 8
             or max(map(len, lines)) * len(lines) * (size * dpi / 72 * 2) ** 2 > MAX_PIXELS
         ):
             raise AdapterError("resource_limit")
+        budget(
+            doc,
+            extra_pixels=math.ceil(max(map(len, lines)) * len(lines) * (size * dpi / 72 * 2) ** 2),
+        )
+        glyph = size * dpi / 72 * 2
+        left, top = math.floor(x - glyph), math.floor(y - glyph)
+        bounds(
+            [
+                left,
+                top,
+                math.ceil((max(map(len, lines)) + 2) * glyph),
+                math.ceil((len(lines) + 2) * glyph),
+            ]
+        )
         return self._edit(
             "type.create", {"text": text, "x": x, "y": y, "size": size, "color": color}
         )
@@ -301,6 +399,7 @@ class PhotoCraftFacade:
     def document_resize(self, width, height):
         _number(width, 1, 4096, integer=True)
         _number(height, 1, 4096, integer=True)
+        resize_budget(self._inspect(), width, height)
         result = self._edit("image.imageSize", {"width": width, "height": height})
         if (result["document"].get("width"), result["document"].get("height")) != (width, height):
             raise AdapterError("postcondition_failed", indeterminate=True)
@@ -346,4 +445,6 @@ class PhotoCraftFacade:
         return {"artifact": artifact, "warnings": result.get("warnings", []), "verified": True}
 
     def undo(self):
+        if not self._inspect().get("canUndo"):
+            raise AdapterError("undo_unavailable")
         return self._edit("edit.undo", {})
