@@ -168,3 +168,57 @@ def test_action_error_is_normalized_in_envelope(monkeypatch):
 
     assert report["ok"] is False
     assert report["error_type"] == "ActionError"
+
+
+def test_control_channel_errors_reach_callers_as_action_error(monkeypatch, control_env, fake_server):
+    """Every control-channel failure must surface as ``ActionError``.
+
+    A reply carrying ``ok: false`` raises the base ``ControlChannelError``, not
+    the unavailable subclass. Catching only the subclass would let that case
+    escape as a raw error, so a caller catching ``ActionError`` would miss it.
+    """
+    from dcc_mcp_photocraft.control_channel import ControlChannelError
+
+    class FailingChannel:
+        def call(self, method, params):
+            raise ControlChannelError("unknown tool `foo`")
+
+    class FakeServer:
+        def control_channel(self):
+            return FailingChannel()
+
+    monkeypatch.setattr(capability_dispatch, "_server", lambda: FakeServer())
+
+    with pytest.raises(ActionError, match="unknown tool"):
+        dispatch("ui_screenshot")
+
+
+def test_discover_prefers_a_configured_cli_path(monkeypatch, tmp_path, clean_env):
+    """The CLI the adapter will drive is the configured one, so report it."""
+    from dcc_mcp_photocraft import host as host_module
+
+    configured = tmp_path / "custom-photocraft-cli"
+    configured.write_text("", encoding="utf-8")
+    # Not on PATH and not in the search dirs: found only via PHOTOCRAFT_CLI.
+    monkeypatch.setattr(host_module, "_which", lambda name: None)
+    monkeypatch.setattr(host_module, "_search_dirs", lambda: [])
+    monkeypatch.setenv("PHOTOCRAFT_CLI", str(configured))
+
+    status = host_module.probe()
+
+    assert status.cli_available is True
+    assert status.binaries.cli == configured
+
+
+def test_discover_ignores_a_stale_configured_cli_path(monkeypatch, tmp_path, clean_env):
+    """A configured path that no longer exists must fall back, not fail."""
+    from dcc_mcp_photocraft import host as host_module
+
+    on_path = tmp_path / ("photocraft-cli" + host_module._SUFFIXES[0])
+    on_path.write_text("", encoding="utf-8")
+    on_path.chmod(on_path.stat().st_mode | 0o111)
+    monkeypatch.setattr(host_module, "_which", lambda name: on_path)
+    monkeypatch.setattr(host_module, "_search_dirs", lambda: [])
+    monkeypatch.setenv("PHOTOCRAFT_CLI", str(tmp_path / "absent-cli"))
+
+    assert host_module.probe().cli_available is True
