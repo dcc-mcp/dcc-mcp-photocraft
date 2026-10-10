@@ -1,0 +1,88 @@
+tools:
+  - name: document_info
+    description: >-
+      Return a JSON summary of one PhotoCraft document (.pcraft): layer tree,
+      dimensions and colour mode. Runs headlessly through photocraft-cli.
+    input_schema:
+      type: object
+      properties:
+        path:
+          type: string
+          description: Path to the .pcraft document to inspect.
+      required: [path]
+      additionalProperties: false
+    output_schema: {type: object}
+    read_only: true
+    destructive: false
+    idempotent: true
+    execution: sync
+    affinity: any
+    timeout_hint_secs: 60
+    source_file: scripts/dispatch.py
+  - name: list_photocraft_commands
+    description: >-
+      List the engine command table the installed PhotoCraft publishes. Call this
+      instead of assuming a command exists: the table is read from the host at
+      call time and grows between upstream releases.
+    input_schema:
+      type: object
+      properties: {}
+      additionalProperties: false
+    output_schema: {type: object}
+    read_only: true
+    destructive: false
+    idempotent: true
+    execution: sync
+    affinity: any
+    timeout_hint_secs: 60
+    source_file: scripts/dispatch.py
+  - name: list_photocraft_methods
+    description: >-
+      List the headless session methods the installed PhotoCraft publishes.
+    input_schema:
+      type: object
+      properties: {}
+      additionalProperties: false
+    output_schema: {type: object}
+    read_only: true
+    destructive: false
+    idempotent: true
+    execution: sync
+    affinity: any
+    timeout_hint_secs: 60
+    source_file: scripts/dispatch.py
+  - name: ui_screenshot
+    description: >-
+      Capture the running PhotoCraft window. Requires the desktop app started with
+      `--control <port>` and a token; fails with guidance when no instance is
+      attached.
+    input_schema:
+      type: object
+      properties: {}
+      additionalProperties: true
+    output_schema: {type: object}
+    read_only: true
+    destructive: false
+    idempotent: false
+    execution: sync
+    affinity: main
+    enforce_thread_affinity: true
+    timeout_hint_secs: 60
+    source_file: scripts/dispatch.py
+  - name: ui_inspect
+    description: >-
+      Inspect the running PhotoCraft UI tree. Requires the desktop app started
+      with `--control <port>` and a token.
+    input_schema:
+      type: object
+      properties: {}
+      additionalProperties: true
+    output_schema: {type: object}
+    read_only: true
+    destructive: false
+    idempotent: true
+    execution: sync
+    affinity: main
+    enforce_thread_affinity: true
+    timeout_hint_secs: 60
+    source_file: scripts/dispatch.py
