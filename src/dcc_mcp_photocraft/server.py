@@ -152,12 +152,19 @@ class PhotoCraftMcpServer(DccServerBase):
 
     def start(self, **kwargs: Any) -> Any:
         self._host_driver.start()
-        self._readiness.bind_queue_dispatcher(self._host_dispatcher)
-        self._readiness.mark_execution_ready()
-        self._readiness.mark_dispatcher_ready()
-        self._readiness.refresh_dcc_ready()
-        self._readiness.publish()
-        return super().start(**kwargs)
+        try:
+            self._readiness.bind_queue_dispatcher(self._host_dispatcher)
+            self._readiness.mark_execution_ready()
+            self._readiness.mark_dispatcher_ready()
+            self._readiness.refresh_dcc_ready()
+            self._readiness.publish()
+            return super().start(**kwargs)
+        except BaseException:
+            # A failed start must not leave the host thread running: the driver
+            # outlives the exception otherwise, and a later start would run
+            # against a readiness state that was never published.
+            self._host_driver.stop()
+            raise
 
     def stop(self, **kwargs: Any) -> Any:
         try:
@@ -170,11 +177,17 @@ _server: Optional[PhotoCraftMcpServer] = None
 
 
 def start_server(**kwargs: Any) -> PhotoCraftMcpServer:
-    """Start the process-wide PhotoCraft MCP server."""
+    """Start the process-wide PhotoCraft MCP server.
+
+    The global is assigned only after ``start()`` returns, so a server that
+    failed to start is never cached: keeping it would make every later call
+    return a dead instance that ``capability_dispatch`` still treats as running.
+    """
     global _server
     if _server is None:
-        _server = PhotoCraftMcpServer(**kwargs)
-        _server.start()
+        server = PhotoCraftMcpServer(**kwargs)
+        server.start()
+        _server = server
     return _server
 
 

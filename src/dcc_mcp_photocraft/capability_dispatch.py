@@ -17,7 +17,7 @@ from __future__ import annotations
 from typing import Any
 
 from .cli_transport import CliError, CliNotFound, CliTransport
-from .control_channel import ControlChannelUnavailable
+from .control_channel import ControlChannelError, ControlChannelUnavailable
 from .env import (
     ENV_CONTROL_PORT,
     cli_path,
@@ -76,9 +76,11 @@ def _dispatch_ui(action_name: str, params: dict[str, Any]) -> dict[str, Any]:
         ) from exc
     try:
         result = channel.call(method, params)
-    except ControlChannelUnavailable as exc:
-        # The channel is rebuilt per call, so there is no stale state to clear
-        # here: report the failure as-is.
+    except ControlChannelError as exc:
+        # The base class, not just the unavailable subclass: a reply carrying
+        # ``ok: false``, a rejected token, a malformed line and an id mismatch
+        # all raise ``ControlChannelError``, and callers catch ``ActionError``.
+        # Catching only the subclass would leak the other three as raw errors.
         raise ActionError(str(exc)) from exc
     return {"action": action_name, "method": method, "result": result}
 

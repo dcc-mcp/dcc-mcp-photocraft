@@ -85,13 +85,36 @@ def find_binary(binary: str) -> Path | None:
     return _which(binary) or _find_in_search_dirs(binary)
 
 
+def _configured(value: str | None) -> Path | None:
+    """Return a configured path when it points at a file, else ``None``.
+
+    An explicitly configured path that does not exist is treated as absent
+    rather than raised: a stale ``PHOTOCRAFT_CLI`` should fall back to discovery
+    the same way an unset one does, so one bad variable cannot make a working
+    install look broken.
+    """
+    if not value:
+        return None
+    candidate = Path(value)
+    return candidate if candidate.is_file() else None
+
+
 def discover() -> HostBinaries:
     """Locate both PhotoCraft executables without invoking either of them.
+
+    The configured paths are checked before the search, because the CLI the
+    adapter will actually drive is the configured one: ``capability_dispatch``
+    prefers ``PHOTOCRAFT_CLI``. Reporting the search result instead would tell
+    an agent the host is missing while every CLI action still works.
 
     Detection is a filesystem lookup only: nothing here spawns a subprocess,
     so it stays safe to call from skill discovery and from ``--help``.
     """
-    return HostBinaries(cli=find_binary(CLI_BINARY), app=find_binary(APP_BINARY))
+    from .env import app_path, cli_path
+
+    cli = _configured(cli_path()) or find_binary(CLI_BINARY)
+    app = _configured(app_path()) or find_binary(APP_BINARY)
+    return HostBinaries(cli=cli, app=app)
 
 
 def cli_version(cli: Path | None = None) -> str | None:

@@ -160,8 +160,10 @@ def build_report(report: dict[str, Any] | None = None) -> dict[str, Any]:
         next_steps.append(
             _next_step(
                 "install-photocraft",
-                ["pip", "install", "dcc-mcp-photocraft"],
-                "The adapter is installed but PhotoCraft is not reachable, so headless actions cannot run.",
+                ["echo", "Install PhotoCraft from https://github.com/storytold/photocraft/releases"],
+                "The adapter is installed but PhotoCraft is not reachable, so headless actions cannot run. "
+                "This step is emitted only after the adapter install, so it must point at the upstream "
+                "PhotoCraft release, not at the adapter again.",
                 "Install PhotoCraft so the adapter can drive it",
             )
         )

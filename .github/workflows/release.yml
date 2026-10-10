@@ -5,14 +5,17 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# Read-only by default; each job elevates only the scope it needs. Only the
+# publish job uses OIDC for PyPI, so only it gets id-token: write.
 permissions:
-  contents: write
-  pull-requests: write
-  id-token: write
+  contents: read
 
 jobs:
   release-please:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
     outputs:
       release_created: ${{ steps.release.outputs.release_created }}
       tag_name: ${{ steps.release.outputs.tag_name }}
