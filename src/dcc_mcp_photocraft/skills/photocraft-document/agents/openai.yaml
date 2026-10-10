@@ -1,4 +1,0 @@
-interface:
-  display_name: PhotoCraft Documents
-  short_description: Edit native PhotoCraft projects in an isolated headless session
-  default_prompt: Start each operation once. Follow the returned Core job to a terminal state; query the same job after timeout and never relaunch an uncertain edit.

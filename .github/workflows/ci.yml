@@ -2,32 +2,60 @@ name: CI
 
 on:
   pull_request:
-  push:
     branches: [main]
+  push:
+    branches: [main, "release-please--branches--**"]
+  schedule:
+    - cron: "17 3 * * 1"
 
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  contract:
+  test:
+    name: ${{ matrix.os }} / Python ${{ matrix.python-version }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
-        python: ['3.11', '3.12']
-    runs-on: ${{ matrix.os }}
-    env:
-      PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
-      DCC_MCP_DISABLE_DEFAULT_SKILL_PATHS: '1'
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python-version: ["3.9", "3.11", "3.12"]
+        exclude:
+          - os: windows-latest
+            python-version: "3.9"
+          - os: macos-latest
+            python-version: "3.9"
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
-          python-version: ${{ matrix.python }}
-      - run: python -m pip install -e ".[test]"
-      - run: python -m ruff check src scripts tests
-      - run: python -m ruff format --check src scripts tests
-      - run: python -m pytest -q --basetemp="${{ runner.temp }}/photocraft-tests"
-      - run: python -m build
-      - name: Validate packaged skill declarations
-        run: python -c "from dcc_mcp_core import validate_skill; r=validate_skill('src/dcc_mcp_photocraft/skills/photocraft-document'); assert r.is_clean, r.issues"
+          python-version: ${{ matrix.python-version }}
+      - run: python -m pip install -e ".[dev]"
+      - run: python -m pytest
+
+  lint-build:
+    name: Lint and package build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -e ".[dev]"
+      - run: ruff check src tests
+      - run: ruff format --check src tests
+      # Validate a real Install SOP report, not a fixture: the report is built
+      # from a live doctor run and pushed through Core's schema validator. A
+      # schema that ships but never executes is how a wrong value reached a
+      # release in the incident this gate exists to prevent.
+      - name: Validate a real Install SOP report
+        run: python -c "from dcc_mcp_photocraft.install_report import validated_report; validated_report(); print('install SOP report is valid')"
+      - run: python -m pip install "hatchling==1.32.0" build twine
+      - run: python -m build --no-isolation
+      - run: python -m twine check dist/*
