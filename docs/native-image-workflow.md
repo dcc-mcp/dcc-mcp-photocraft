@@ -98,8 +98,12 @@ python scripts/native_showcase.py --cli /absolute/path/to/photocraft-cli \
   --output evidence/native-core-local
 ```
 
-The harness creates its own original geometric fixtures by default. Output must
-be a new directory; it never requires a user's documents or credentials.
+The harness creates its own original geometric fixtures by default, as CI does.
+The local report hash above instead uses the separately supplied Solar Geometry
+poster inputs via `--input-dir /path/to/originals` (containing
+`original-landscape.png` and `original-sun-field.png`). Both run the same
+workflow/oracles; their visuals and artifact hashes differ. Output must be a new
+directory; no user documents or credentials are required.
 
 ## Explicit limits
 
