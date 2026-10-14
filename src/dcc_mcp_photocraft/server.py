@@ -9,11 +9,13 @@ from pathlib import Path
 from typing import Any, Optional
 
 from dcc_mcp_core import AdapterReadinessBinder, DccServerOptions, HostExecutionBridge
+from dcc_mcp_core._server.inprocess_executor import run_skill_script
 from dcc_mcp_core.host import QueueDispatcher, StandaloneHost
 from dcc_mcp_core.server_base import DccServerBase
 
 from .__version__ import __version__
 from .actions import register_actions
+from .capability_dispatch import active_server
 from .control_channel import ControlChannel, ControlChannelUnavailable, endpoint_from_env
 from .env import (
     ENV_CLI,
@@ -68,6 +70,7 @@ class PhotoCraftMcpServer(DccServerBase):
         self._host_driver = StandaloneHost(self._host_dispatcher, thread_name="dcc-mcp-photocraft-host")
         execution_bridge = HostExecutionBridge(
             dispatcher=self._host_dispatcher,
+            runner=self._run_skill,
             host_dispatcher=self._host_dispatcher,
             default_thread_affinity="any",
             default_execution="sync",
@@ -99,6 +102,15 @@ class PhotoCraftMcpServer(DccServerBase):
         self._write_root = write_root or os.environ.get(ENV_WRITE_ROOT)
         self._readiness = AdapterReadinessBinder(self, dcc_ready_probe=self._host_ready)
         register_actions(self)
+        self.register_builtin_actions(include_bundled=False)
+
+    def _run_skill(self, script_path: str, params: Any) -> Any:
+        """Keep constructor configuration isolated to this instance and call."""
+        token = active_server.set(self)
+        try:
+            return run_skill_script(script_path, params)
+        finally:
+            active_server.reset(token)
 
     # -- host surfaces -----------------------------------------------------
 
@@ -151,11 +163,17 @@ class PhotoCraftMcpServer(DccServerBase):
     # -- lifecycle ---------------------------------------------------------
 
     def start(self, **kwargs: Any) -> Any:
+        if self._handle is not None:
+            return self._handle
+        if self._host_dispatcher.is_shutdown():
+            raise RuntimeError("This PhotoCraft server has stopped; create a new PhotoCraftMcpServer instance")
         self._host_driver.start()
         try:
-            self._readiness.bind_queue_dispatcher(self._host_dispatcher)
+            self._readiness = AdapterReadinessBinder.bind_queue_dispatcher(
+                self, self._host_dispatcher, dcc_ready_probe=self._host_ready
+            )
             self._readiness.mark_execution_ready()
-            self._readiness.mark_dispatcher_ready()
+            self._readiness.mark_dispatcher_ready(True)
             self._readiness.refresh_dcc_ready()
             self._readiness.publish()
             return super().start(**kwargs)
@@ -195,8 +213,10 @@ def stop_server() -> None:
     """Stop the process-wide server, if one is running."""
     global _server
     if _server is not None:
-        _server.stop()
-        _server = None
+        try:
+            _server.stop()
+        finally:
+            _server = None
 
 
 def main() -> None:

@@ -1,18 +1,18 @@
 ---
 name: photocraft-core
 description: >-
-  Domain skill — inspect PhotoCraft documents, discover the command and method
+  Domain skill — run bounded native image workflows, inspect documents, discover the command and method
   tables the installed PhotoCraft publishes, and drive the running PhotoCraft
   desktop app.
 license: MIT
-compatibility: "PhotoCraft 0.2+; dcc-mcp-core 0.20.36+"
+compatibility: "PhotoCraft CLI with runtime-discovered capabilities; dcc-mcp-core 0.20.44+"
 allowed-tools: "python"
 metadata:
   dcc-mcp:
     dcc: photocraft
     layer: domain
     version: "0.1.0"
-    search-hint: "photocraft document_info list_photocraft_commands list_photocraft_methods ui_screenshot ui_inspect"
+    search-hint: "photocraft document_info list_photocraft_commands list_photocraft_methods ui_screenshot ui_inspect execute_photocraft_image_batch"
     tags: "photocraft,image,editing,raster"
     tools: tools.yaml
 ---
@@ -32,10 +32,9 @@ server.
 ## Discover, do not assume
 
 PhotoCraft is pre-1.0 and its command table grows continuously. **Call
-`list_photocraft_commands` before assuming a command exists.** The ids accepted
-by this skill are resolved against the table the installed host reports, not
-against a list frozen at adapter release time, so a command that appears upstream
-becomes reachable without an adapter release.
+`list_photocraft_commands` before assuming a command exists.** Discovery reads the table the installed host reports, not a catalog frozen at
+adapter release time. New upstream commands become visible to discovery; the
+image workflow still exposes only its reviewed typed translations.
 
 ## Driving the live app
 
@@ -54,3 +53,31 @@ Upstream requires an `auth` frame as the first request on every connection, and
 refuses to dispatch anything before it succeeds. The port alone is therefore not
 enough — a token is always required, and if you did not pass one at launch
 upstream generated one and wrote it to standard error.
+
+
+## Bounded native editing
+
+Use `execute_photocraft_image_batch` for one complete original-PNG workflow.
+It accepts only typed `steps`, at most 48. Supported op values: `open_png`,
+`place_png`, `set_layer`, `mask_rectangle`, `set_mask`, `curves`, `inspect`,
+`save_project`, `close`, `reopen_project`, `export_png`.
+
+1. Open a PNG under the configured read root, assigning document and base-layer
+   aliases. Place additional original PNGs as embedded Smart Objects with new
+   layer aliases. Only one document may be open at once.
+2. Apply bounded layer properties, editable masks and Curves adjustment layers.
+   Inspect after changes; verify that hiding an adjustment restores the expected
+   baseline and that masks remain editable.
+3. Save to a new `.pcraft` output, close and reopen only that unchanged owned save.
+   Revisions and indices can reset; never supply raw numeric identity guesses.
+4. Inspect and continue editing through the verified aliases, then export a new
+   PNG. Independently compare pixels and hashes, and verify inputs are unchanged.
+5. Failure is not rollback. Do not replay automatically. Inspect completed steps
+   and any published outputs first; in-memory work does not persist across calls.
+
+Inputs and outputs are relative to separate launcher-configured read/write roots.
+No overwrite, arbitrary command/JSON facade, external native project import,
+control_call, GUI or Web editing is provided by this workflow. Actual native
+qualification is Linux x86_64 v0.8.2; discovery of another version is not testing.
+The native task uses current MCP tool schemas; engine params use reviewed local
+bounds because the host's engine catalog only has prose parameter descriptions.

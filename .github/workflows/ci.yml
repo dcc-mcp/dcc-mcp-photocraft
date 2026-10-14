@@ -37,6 +37,8 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - run: python -m pip install -e ".[dev]"
       - run: python -m pytest
+        env:
+          DCC_MCP_LOG_DIR: ${{ runner.temp }}/dcc-mcp-logs
 
   lint-build:
     name: Lint and package build
@@ -48,8 +50,8 @@ jobs:
         with:
           python-version: "3.12"
       - run: python -m pip install -e ".[dev]"
-      - run: ruff check src tests
-      - run: ruff format --check src tests
+      - run: ruff check src tests scripts
+      - run: ruff format --check src tests scripts
       # Validate a real Install SOP report, not a fixture: the report is built
       # from a live doctor run and pushed through Core's schema validator. A
       # schema that ships but never executes is how a wrong value reached a
@@ -59,3 +61,30 @@ jobs:
       - run: python -m pip install "hatchling==1.32.0" build twine
       - run: python -m build --no-isolation
       - run: python -m twine check dist/*
+
+  native-image:
+    name: Official Linux native image workflow
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -e ".[dev,mcp]" pillow==12.3.0
+      - name: Download and verify official native runtime
+        run: |
+          curl --fail --location --retry 2 https://github.com/storytold/photocraft/releases/download/v0.8.2/photocraft-0.8.2-linux-x86_64.tar.gz -o "${RUNNER_TEMP}/photocraft.tar.gz"
+          echo '16c3089976eee2d290dbe73986db4835c1ec5a043c5c16b017b24848ff5ea827  '"${RUNNER_TEMP}/photocraft.tar.gz" | sha256sum -c -
+          tar -xzf "${RUNNER_TEMP}/photocraft.tar.gz" -C "${RUNNER_TEMP}"
+          echo 'f0140a060462d35fcc0ce888cbf7ab05cd7dfbb52da96f8472f207f00cb3b2eb  '"${RUNNER_TEMP}/photocraft-0.8.2-linux-x86_64/bin/photocraft-cli" | sha256sum -c -
+      - name: Genuine Core MCP image acceptance
+        run: python scripts/native_showcase.py --cli "${RUNNER_TEMP}/photocraft-0.8.2-linux-x86_64/bin/photocraft-cli" --output evidence/native-core-ci
+        env:
+          DCC_MCP_LOG_DIR: ${{ runner.temp }}/dcc-mcp-logs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: photocraft-native-core-evidence
+          path: evidence/native-core-ci/
+          retention-days: 14

@@ -62,7 +62,7 @@ ruff format --check src tests       # format check (line-length 120, py39 target
 python -m build --no-isolation      # build wheel + sdist
 ```
 
-Tests never require PhotoCraft to be installed and never reach the network. The
+Default tests never require PhotoCraft to be installed and never reach the network. The
 control channel is exercised against an in-process fake server
 (`tests/conftest.py`), so the auth handshake and line framing are proven against a
 real socket rather than a mock.
@@ -101,7 +101,9 @@ to write a method that silently never works:
 
 * **One-shot subcommands** take their input in argv and print JSON to stdout:
   `commands --json`, `info <file>`, `run --new <json> --cmd <id>`. These go
-  through `CliTransport.run`.
+  through `CliTransport.run` only where no file authority is needed. Agent-facing
+  document inspection uses a scoped `serve` batch instead: one-shot `info` and
+  `run` do not accept automation-root flags.
 * **`serve` is a session.** It keeps one headless engine session open and answers
   JSON-lines requests on stdin/stdout, so the request is written to the
   process's stdin rather than passed as arguments. It goes through
@@ -111,3 +113,22 @@ to write a method that silently never works:
 Both the engine command table (`commands --json`) and the headless method list
 (`serve` -> `methods`) are read from the installed host at call time. Neither is
 mirrored in this repository.
+
+
+## Bounded image workflow
+
+`image_batch.py` adds one typed workflow tool, not a mirror of the entire host
+command table. Validate required native MCP tool schemas and command availability
+at runtime; engine command params are prose, not JSON Schema. Preserve the
+Python 3.9 default path, one owned session per batch, symbolic aliases, separate
+read/write authorities, unchanged staged PNG inputs and no-overwrite outputs.
+Never expose arbitrary commands through this workflow or reopen unowned native
+files. Real native acceptance is opt-in and distinct from fake unit tests, Web
+qualification and desktop GUI qualification. Fixed per-action Skill scripts are
+required because Core does not inject an action name into shared script params.
+External desktop socket requests use `any` Python affinity, not recursive main
+thread dispatch. Keep release workflows and version changes separate.
+
+Automation-root flags belong after `serve` or `mcp`, not before the subcommand,
+and are invalid for the one-shot `commands`/`info`/`run` commands. Keep live CLI
+acceptance for these shapes; permissive fake binaries cannot establish them.

@@ -12,7 +12,9 @@ PhotoCraft differs from the sibling PdfCraft adapter in the root flags: it takes
 the read and write authorities separately as ``--automation-read-root`` and
 ``--automation-write-root``, and upstream fails closed unless the applicable root
 was granted at launch. Paths handed to the CLI are interpreted relative to those
-roots, so forwarding them is what makes file access work at all.
+roots. These flags belong after `serve` or `mcp`; one-shot `commands`, `info`
+and `run` do not accept them. Agent-facing document inspection therefore uses a
+fixed scoped serve batch, while catalog discovery needs no filesystem authority.
 """
 
 from __future__ import annotations
@@ -69,8 +71,8 @@ class CliTransport:
     def write_root(self) -> str | None:
         return self._write_root
 
-    def _base_args(self) -> list[str]:
-        args = [self._binary]
+    def _authority_args(self) -> list[str]:
+        args: list[str] = []
         # The two roots are independent authorities rather than one sandbox:
         # upstream refuses a read without a read root and a write without a
         # write root, so each is forwarded only when it was actually granted.
@@ -82,7 +84,9 @@ class CliTransport:
 
     def run(self, args: list[str], *, timeout_secs: float | None = None) -> str:
         """Run one subcommand and return its stdout, raising on a non-zero exit."""
-        command = self._base_args() + list(args)
+        # Root flags are supported only by native mcp/serve, never one-shot
+        # commands/info/run. Scoped document reads use serve below.
+        command = [self._binary, *args]
         try:
             completed = subprocess.run(
                 command,
@@ -135,7 +139,7 @@ class CliTransport:
         so it cannot be driven through :meth:`run`: the request has to be written
         to the process's stdin and the reply read from its stdout.
         """
-        command = self._base_args() + ["serve"]
+        command = [self._binary, "serve", *self._authority_args()]
         payload = json.dumps(request) + "\n"
         try:
             completed = subprocess.run(
@@ -178,21 +182,53 @@ class CliTransport:
                 return [item for item in commands if isinstance(item, dict)]
         return []
 
-    def run_command(self, command_id: str, params: dict[str, Any] | None = None) -> Any:
-        """Run one engine command by id through ``photocraft-cli run``.
+    def _checked_batch(self, steps: list[dict[str, Any]]) -> list[Any]:
+        payload = self._serve_lines({"id": 1, "method": "batch", "params": {"steps": steps, "stopOnError": True}})
+        if not isinstance(payload, dict):
+            raise CliError("native read batch returned a non-object result")
+        rows = payload.get("results")
+        if (
+            payload.get("failed") != 0
+            or payload.get("completed") != len(steps)
+            or not isinstance(rows, list)
+            or len(rows) != len(steps)
+            or any(not isinstance(row, dict) or row.get("ok") is not True for row in rows)
+        ):
+            raise CliError("native batch had a failed or incomplete step; no automatic replay")
+        return [row.get("result") for row in rows]
 
-        Command ids are resolved against the table upstream publishes, so this
-        accepts any id the installed host reports rather than a local allowlist.
+    def run_command(self, command_id: str, params: dict[str, Any] | None = None) -> Any:
+        """Legacy Python API: a fresh scoped session, not unsaved cross-call editing.
+
+        This generic helper is not exposed by the new typed image Skill tool.
+        Native serve enforces read/write authorities and denies ambient file I/O.
         """
-        args = ["--cmd", command_id]
-        if params:
-            args += ["--params", json.dumps(params)]
-        return _parse_json(self.run(["run", "--new", "{}", *args]), f"run {command_id}")
+        results = self._checked_batch(
+            [
+                {"method": "doc.new", "params": {}},
+                {"method": "engine.execute", "params": {"command": command_id, "params": params or {}}},
+            ]
+        )
+        return results[-1]
 
     def info(self, document: str | Path) -> dict[str, Any]:
-        """Return the JSON summary of one PhotoCraft document (``.pcraft``)."""
-        payload = _parse_json(self.run(["info", str(document)]), "info")
-        return payload if isinstance(payload, dict) else {"result": payload}
+        """Inspect a document through a fresh, read-authorized native session.
+
+        The one-shot `info` command has no automation-root flags, so it must not
+        be substituted for a scoped read in an agent-facing tool.
+        """
+        if not self._read_root:
+            raise CliError("document_info requires a configured PHOTOCRAFT_READ_ROOT")
+        results = self._checked_batch(
+            [
+                {"method": "doc.open", "params": {"path": str(document)}},
+                {"method": "doc.inspect", "params": {"index": 0}},
+                {"method": "doc.close", "params": {"index": 0}},
+            ]
+        )
+        if not isinstance(results[1], dict):
+            raise CliError("native document inspection returned a non-object result")
+        return results[1]
 
 
 def _encode_value(value: Any) -> str:
