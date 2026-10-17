@@ -17,7 +17,7 @@ This adapter adds the things a standalone MCP server does not provide:
 - **Sidecar lifecycle and discovery.** The adapter registers the running instance, reports readiness, and exposes a doctor that distinguishes "PhotoCraft is not installed" from "PhotoCraft is installed but misconfigured".
 - **Host detection without Rust.** It finds the `photocraft-cli` binary whether it arrived inside a GUI package or as a standalone archive, on Windows, macOS and Linux.
 
-What it deliberately does **not** do is reimplement PhotoCraft's command set. Command ids are resolved at runtime against the table the installed host reports, so new upstream commands become reachable without an adapter release.
+What it deliberately does **not** do is reimplement PhotoCraft's command set. The installed command table is discovered at runtime. Newly reported commands become visible to discovery without an adapter release; the bounded image workflow exposes only its reviewed typed operations.
 
 ## Requirements
 
@@ -102,3 +102,67 @@ ruff format --check src tests
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+## Bounded native image editing
+
+The `photocraft-core` Skill now also exposes `execute_photocraft_image_batch`.
+One call owns one fresh headless native MCP process for a typed sequence of:
+
+- `open_png`, `place_png` as an embedded editable Smart Object
+- `set_layer`, `mask_rectangle`, `set_mask`, non-destructive `curves`
+- `inspect`, `save_project`, `close`, `reopen_project`, `export_png`
+
+The existing five discovery/document/UI tools are retained. This workflow uses
+reviewed typed translations, not arbitrary commands or a copy of the complete
+upstream catalog. Required command availability and native MCP tool schemas are
+checked against the installed host. Engine command parameter documentation is
+prose; those arguments use adapter-owned typed checks, not purported live JSON
+Schema validation. A new upstream command is not automatically exposed by this
+bounded editing tool.
+
+Set `PHOTOCRAFT_CLI`, `PHOTOCRAFT_READ_ROOT` and `PHOTOCRAFT_WRITE_ROOT` before
+starting the adapter. Read and write roots may be different. All workflow file
+names are relative to their applicable root. The adapter stages original PNGs
+without changing them and gives its owned native process access only to its own
+staging directory. Output publication never replaces an existing destination.
+
+```json
+{
+  "steps": [
+    {"op":"open_png","document":"poster","input":"original.png","base_layer":"base"},
+    {"op":"curves","document":"poster","layer":"tone","points":[[0,0],[128,160],[255,255]]},
+    {"op":"save_project","document":"poster","output":"poster.pcraft"},
+    {"op":"close","document":"poster"},
+    {"op":"reopen_project","document":"poster","output":"poster.pcraft"},
+    {"op":"export_png","document":"poster","output":"poster.png"}
+  ]
+}
+```
+
+A batch is not an atomic transaction. On failure or timeout, completed native
+steps may have applied; never automatically replay it. Unsaved session state does
+not continue across calls. Only unchanged native saves from this same batch may
+be reopened; arbitrary external `.pcraft`/PSD imports and general resume are not
+exposed. Caller cancellation does not promise rollback. Publication errors report
+already-published outputs so they can be inspected rather than overwritten.
+
+Input is bounded RGB/RGBA 8-bit non-interlaced PNG. The initial workflow permits
+one open document at a time, up to 48 steps, 16 layers, 4096 pixels per side and
+4,194,304 pixels per image, with a 16,777,216 aggregate layer-pixel budget. Input,
+output, response and native-session time limits are enforced separately. Secure
+file publication requires descriptor-relative no-follow support; unsupported
+platforms fail before native editing rather than weakening these guards.
+
+Core 0.20.44 is the tested minimum. The default adapter remains Python 3.9+;
+optional live showcase tooling uses Python 3.10+ dependencies. The CLI is
+headless native, not the desktop GUI. Actual native acceptance is qualified
+against official Linux x86_64 PhotoCraft v0.8.2; other versions are discovered at
+runtime but are not claimed tested merely because their schemas are compatible.
+See [native workflow and qualification](docs/native-image-workflow.md).
+
+### Web mode
+
+The released [v0.8.2 web shell](https://github.com/storytold/photocraft/blob/d43db3e153c76aefce9b32cef9099e458eaf17a8/apps/photocraft-web/src/web.rs)
+provides UI and file flows, but no reviewed exported live-document editing
+command dispatcher was found. No Web adapter or maintained source overlay is
+introduced here. Native MCP success does not qualify Web/WASM or desktop GUI.

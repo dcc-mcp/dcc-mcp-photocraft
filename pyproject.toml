@@ -21,9 +21,8 @@ classifiers = [
   "Programming Language :: Python :: 3.12",
   "Topic :: Multimedia :: Graphics",
 ]
-# 0.20.40 is the org target: it is where the shared Install SOP API becomes
-# unconditionally available, which this adapter uses in its report validation.
-dependencies = ["dcc-mcp-core>=0.20.40,<1.0.0"]
+# 0.20.44 is the tested Core registry, Skill and readiness contract.
+dependencies = ["dcc-mcp-core>=0.20.44,<1.0.0", "jsonschema>=4.18,<5"]
 
 [project.optional-dependencies]
 dev = ["build>=1.2", "pytest>=8", "ruff>=0.8", "twine>=6"]

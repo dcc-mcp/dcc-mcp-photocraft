@@ -14,6 +14,7 @@ when no instance is attached, rather than silently doing nothing.
 
 from __future__ import annotations
 
+from contextvars import ContextVar
 from typing import Any
 
 from .cli_transport import CliError, CliNotFound, CliTransport
@@ -39,12 +40,18 @@ UI_METHODS = {
 }
 
 
+active_server: ContextVar[Any] = ContextVar("photocraft_active_server", default=None)
+
+
 class ActionError(RuntimeError):
     """An action could not be completed against the host."""
 
 
 def _transport() -> CliTransport:
     """Build a CLI transport from the configured (or discovered) binary."""
+    instance = active_server.get()
+    if instance is not None:
+        return CliTransport(instance.cli_binary, read_root=instance.read_root, write_root=instance.write_root)
     return CliTransport(cli_path(), read_root=read_root(), write_root=write_root())
 
 
@@ -52,9 +59,10 @@ def _server():
     """Return the running server, which owns the control channel."""
     from . import server
 
-    if server._server is None:  # noqa: SLF001 - module-global access is the lifecycle contract
+    instance = active_server.get() or server._server
+    if instance is None:  # noqa: SLF001 - module-global access is the lifecycle contract
         raise ControlChannelUnavailable("no PhotoCraft server is running")
-    return server._server
+    return instance
 
 
 def dispatch(action_name: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -98,11 +106,18 @@ def _dispatch_cli(action_name: str, params: dict[str, Any]) -> dict[str, Any]:
                 raise ActionError("document_info requires a `path` argument")
             return {"action": action_name, "result": transport.info(path)}
 
-        if action_name == "list_commands":
+        if action_name in {"list_commands", "list_photocraft_commands"}:
             return {"action": action_name, "commands": transport.commands()}
 
-        if action_name == "list_methods":
+        if action_name in {"list_methods", "list_photocraft_methods"}:
             return {"action": action_name, "methods": transport.methods()}
+
+        if action_name == "execute_photocraft_image_batch":
+            from .image_batch import execute_image_batch
+
+            if set(params) != {"steps"}:
+                raise ActionError("execute_photocraft_image_batch requires only a steps argument")
+            return {"action": action_name, "result": execute_image_batch(transport, params["steps"])}
 
         # Every other action name is a PhotoCraft command id, resolved against
         # the table upstream publishes rather than against a local list.

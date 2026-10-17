@@ -87,57 +87,41 @@ def test_empty_output_raises(tmp_path):
         CliTransport(stub).commands()
 
 
-def test_read_and_write_roots_are_forwarded_separately(tmp_path, monkeypatch):
-    """The two roots are independent authorities, so each is forwarded alone."""
-    captured: list[list[str]] = []
+def test_authority_flags_are_serve_local_and_catalog_is_unscoped(tmp_path, monkeypatch):
+    import subprocess
+
+    captured = []
 
     def fake_run(command, **kwargs):
-        captured.append(list(command))
-        import subprocess
-
-        return subprocess.CompletedProcess(command, 0, stdout="[]", stderr="")
+        captured.append((list(command), kwargs.get("input")))
+        out = '{"id":1,"ok":true,"result":[]}' if "serve" in command else "[]"
+        return subprocess.CompletedProcess(command, 0, stdout=out, stderr="")
 
     monkeypatch.setattr("subprocess.run", fake_run)
     stub = tmp_path / "photocraft-cli"
-    stub.write_text("", encoding="utf-8")
-
-    CliTransport(stub, read_root="/in").commands()
-    assert "--automation-read-root" in captured[0]
-    assert "--automation-write-root" not in captured[0]
-
-    CliTransport(stub, read_root="/in", write_root="/out").commands()
-    assert "--automation-read-root" in captured[1]
-    assert "--automation-write-root" in captured[1]
-    assert captured[1][captured[1].index("--automation-write-root") + 1] == "/out"
-
-    CliTransport(stub).commands()
-    assert "--automation-read-root" not in captured[2]
-    assert "--automation-write-root" not in captured[2]
+    stub.touch()
+    transport = CliTransport(stub, read_root="/in", write_root="/out")
+    assert transport.commands() == []
+    assert captured[-1][0] == [str(stub), "commands", "--json"]
+    assert transport.methods() == []
+    assert captured[-1][0] == [str(stub), "serve", "--automation-read-root", "/in", "--automation-write-root", "/out"]
 
 
-def test_run_command_passes_the_command_and_params(tmp_path, monkeypatch):
-    captured: list[list[str]] = []
-
-    def fake_run(command, **kwargs):
-        captured.append(list(command))
-        import subprocess
-
-        return subprocess.CompletedProcess(command, 0, stdout='{"command":"file.new","result":{}}', stderr="")
-
-    monkeypatch.setattr("subprocess.run", fake_run)
+def test_run_command_uses_scoped_serve_not_unrestricted_one_shot(tmp_path, monkeypatch):
+    seen = []
     stub = tmp_path / "photocraft-cli"
-    stub.write_text("", encoding="utf-8")
+    stub.touch()
 
-    result = CliTransport(stub).run_command("file.new", {"width": 800, "height": 600})
+    def batch(self, steps):
+        seen.extend(steps)
+        return [{}, {"created": True}]
 
-    assert result == {"command": "file.new", "result": {}}
-    args = captured[0]
-    assert "--cmd" in args
-    assert args[args.index("--cmd") + 1] == "file.new"
-    # Params travel as one JSON object through ``--params``, so nested
-    # structures survive the command line intact.
-    assert "--params" in args
-    assert json.loads(args[args.index("--params") + 1]) == {"width": 800, "height": 600}
+    monkeypatch.setattr(CliTransport, "_checked_batch", batch)
+    assert CliTransport(stub).run_command("file.new", {"width": 800}) == {"created": True}
+    assert seen == [
+        {"method": "doc.new", "params": {}},
+        {"method": "engine.execute", "params": {"command": "file.new", "params": {"width": 800}}},
+    ]
 
 
 def test_methods_posts_a_json_lines_request_to_serve(tmp_path, monkeypatch):
@@ -199,9 +183,9 @@ def test_methods_detects_an_id_mismatch(tmp_path, monkeypatch):
 
 def test_json_is_recovered_from_surrounding_output(tmp_path):
     """Upstream writes progress lines around the payload in some subcommands."""
-    stub = _write_stub(tmp_path, ["opening document...", '{"layers": 3}'])
+    stub = _write_stub(tmp_path, ["loading catalog...", '{"commands": [{"id": "file.new"}]}'])
 
-    assert CliTransport(stub).info("x.pcraft") == {"layers": 3}
+    assert CliTransport(stub).commands() == [{"id": "file.new"}]
 
 
 def test_timeout_reports_the_bound_that_applied(tmp_path, monkeypatch):
@@ -231,3 +215,36 @@ def test_serve_reports_a_non_zero_exit(tmp_path, monkeypatch):
 
     with pytest.raises(CliError, match="exit 1"):
         CliTransport(stub).methods()
+
+
+def test_info_requires_read_authority_and_checks_every_native_step(tmp_path, monkeypatch):
+    stub = tmp_path / "photocraft-cli"
+    stub.touch()
+    with pytest.raises(CliError, match="READ_ROOT"):
+        CliTransport(stub).info("x.pcraft")
+    seen = []
+
+    def reply(self, request):
+        seen.append(request)
+        return {
+            "failed": 0,
+            "completed": 3,
+            "results": [
+                {"ok": True, "result": {"index": 0}},
+                {"ok": True, "result": {"width": 10, "layers": []}},
+                {"ok": True, "result": {}},
+            ],
+        }
+
+    monkeypatch.setattr(CliTransport, "_serve_lines", reply)
+    transport = CliTransport(stub, read_root=tmp_path)
+    assert transport.info("original.pcraft")["width"] == 10
+    assert [step["method"] for step in seen[-1]["params"]["steps"]] == ["doc.open", "doc.inspect", "doc.close"]
+    for bad in [
+        {"failed": 1, "completed": 1, "results": [{"ok": False}]},
+        {"failed": 0, "completed": 3, "results": [{"ok": True}]},
+        {"failed": 0, "completed": 3, "results": [{"ok": True}, {"ok": False}, {"ok": True}]},
+    ]:
+        monkeypatch.setattr(CliTransport, "_serve_lines", lambda self, request, value=bad: value)
+        with pytest.raises(CliError, match="failed or incomplete"):
+            transport.info("original.pcraft")

@@ -27,8 +27,9 @@ def no_real_host(monkeypatch):
         def __init__(self, *args, **kwargs):
             pass
 
-        def bind_queue_dispatcher(self, *args, **kwargs):
-            return self
+        @classmethod
+        def bind_queue_dispatcher(cls, *args, **kwargs):
+            return cls()
 
         def mark_execution_ready(self, *args, **kwargs):
             return self

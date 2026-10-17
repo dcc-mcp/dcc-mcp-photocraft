@@ -37,3 +37,6 @@ coverage.xml
 /.trae/
 /.windsurf/
 .benchmarks/
+
+# Local native-host acceptance artifacts are attached separately, not source.
+evidence/
