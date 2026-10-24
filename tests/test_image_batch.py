@@ -130,7 +130,17 @@ for line in sys.stdin:
    if mode=='timeout_command':time.sleep(10)
    if mode=='nested_error':value={'ok':True,'result':{'ok':False,'error':'private /sensitive/path'}}
    elif command=='layer.newAdjustmentLayer.curves':
-    layer={'id':next_id,'name':'Curves','kind':'Adjustment','hasMask':True,'visible':True,'opacity':1.0,'adjustment':{'Curves':{'points':p['points']}}}
+    identity=[[0,0],[255,255]]
+    adjustment={'kind':'curves','params':{'points':p['points'],'red':identity,'green':identity,'blue':identity}}
+    if mode=='legacy_curves':
+     curve=lambda points:[{'input':x/255,'output':y/255} for x,y in points]
+     adjustment={'Curves':{'master':curve(p['points']),'per_channel':[curve(identity)]*3,
+                          'space':'Rgb','black':[],'pencil':False}}
+    if mode=='wrong_curves_kind':adjustment['kind']='levels'
+    if mode=='wrong_curves_points':adjustment['params']['points']=[[0,0],[255,255]]
+    if mode=='unsupported_curves':adjustment['unsupported']=True
+    layer={'id':next_id,'name':'Curves','kind':'Adjustment','hasMask':True,'visible':True,
+           'opacity':1.0,'adjustment':adjustment}
     next_id+=1;state['layers'].insert(0,layer);value={'layer':layer['id']}
    elif command=='select.rect':state['hasSelection']=True;value={}
    elif command=='select.deselect':
@@ -311,6 +321,64 @@ def test_native_command_failure_reports_only_reviewed_identifier(fake_host, monk
         assert "sensitive" not in str(failure.value)
     finally:
         session.close()
+
+
+@pytest.mark.parametrize("mode", ["", "legacy_curves"])
+def test_curves_creation_accepts_reviewed_native_readback_shapes(fake_host, monkeypatch, mode):
+    monkeypatch.setenv("TEST_NATIVE_MODE", mode)
+    steps = [opening(), operation("curves", layer="grade", points=[[0, 0], [128, 155], [255, 255]])]
+    inputs = {"original.png": {"stage": "original.png", "pixels": {"width": 4, "height": 4}}}
+    report = {"steps": [], "completed_steps": 0}
+    session = batch._NativeSession(fake_host.transport, fake_host.read, 5)
+    try:
+        session.discover(steps)
+        batch._run_steps(session, steps, inputs, {}, -1, report)
+    finally:
+        session.close()
+    assert report["completed_steps"] == 2
+    assert report["steps"][1]["layer"] == "grade"
+
+
+@pytest.mark.parametrize("mode", ["wrong_curves_kind", "wrong_curves_points", "unsupported_curves"])
+def test_curves_creation_rejects_unknown_or_changed_adjustment(fake_host, monkeypatch, mode):
+    monkeypatch.setenv("TEST_NATIVE_MODE", mode)
+    steps = [opening(), operation("curves", layer="grade", points=[[0, 0], [128, 155], [255, 255]])]
+    inputs = {"original.png": {"stage": "original.png", "pixels": {"width": 4, "height": 4}}}
+    report = {"steps": [], "completed_steps": 0}
+    session = batch._NativeSession(fake_host.transport, fake_host.read, 5)
+    try:
+        session.discover(steps)
+        with pytest.raises(CliError, match="nondestructive adjustment layer"):
+            batch._run_steps(session, steps, inputs, {}, -1, report)
+    finally:
+        session.close()
+    assert report["completed_steps"] == 1 and report["failed_step"] == 2
+    assert report["mutation_possible"] is True
+
+
+@pytest.mark.parametrize(
+    "adjustment",
+    [
+        "Curves",
+        {"Curves": {"points": [[0, 0], [255, 255]]}},
+        {"kind": "curves", "params": {}},
+        {"kind": "curves", "params": {"points": [[0, 0], [255, 255]]}, "unsupported": True},
+        {
+            "kind": "curves",
+            "params": {"points": [[0, 0], [255, True]], "red": [], "green": [], "blue": []},
+        },
+        {
+            "kind": "curves",
+            "params": {"points": [[0, 0], [255, 10**1000]], "red": [], "green": [], "blue": []},
+        },
+        {
+            "kind": "curves",
+            "params": {"points": [[0, 0], [255, 255]], "red": [], "green": [], "blue": []},
+        },
+    ],
+)
+def test_curves_readback_rejects_unreviewed_shapes_and_parameters(adjustment):
+    assert not batch._curves_match({"kind": "Adjustment", "adjustment": adjustment}, [[0, 0], [255, 255]])
 
 
 @SECURE

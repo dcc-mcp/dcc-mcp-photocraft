@@ -810,6 +810,60 @@ def _signature(state: dict[str, Any]) -> list[dict[str, Any]]:
     return [{key: layer.get(key) for key in fields} for layer in state["layers"]]
 
 
+def _curves_match(layer: dict[str, Any], points: list[list[float]]) -> bool:
+    """Recognize only the reviewed internal-enum and command-parameter Curves readbacks."""
+    if layer.get("kind") != "Adjustment":
+        return False
+    adjustment = layer.get("adjustment")
+    if not isinstance(adjustment, dict):
+        return False
+
+    def matches(actual: Any, expected: list[list[float]], *, internal: bool = False) -> bool:
+        if not isinstance(actual, list) or len(actual) != len(expected):
+            return False
+        for pair, target in zip(actual, expected):
+            if internal:
+                if not isinstance(pair, dict) or set(pair) != {"input", "output"}:
+                    return False
+                pair = [pair["input"], pair["output"]]
+            if not isinstance(pair, list) or len(pair) != 2:
+                return False
+            for number, value in zip(pair, target):
+                scale = 255 if internal else 1
+                if type(number) not in {int, float} or not 0 <= number <= 255 / scale:
+                    return False
+                if not math.isfinite(number) or not math.isclose(number * scale, value, abs_tol=0.011):
+                    return False
+        return True
+
+    identity = [[0, 0], [255, 255]]
+    if set(adjustment) == {"Curves"}:
+        params = adjustment["Curves"]
+        if not isinstance(params, dict) or not {"master", "per_channel"} <= set(params):
+            return False
+        if set(params) - {"master", "per_channel", "space", "black", "pencil"}:
+            return False
+        channels = params["per_channel"]
+        return (
+            params.get("space", "Rgb") == "Rgb"
+            and params.get("pencil", False) is False
+            and params.get("black", []) == []
+            and matches(params["master"], points, internal=True)
+            and isinstance(channels, list)
+            and len(channels) == 3
+            and all(matches(channel, identity, internal=True) for channel in channels)
+        )
+    if set(adjustment) == {"kind", "params"} and adjustment["kind"] == "curves":
+        params = adjustment["params"]
+        return (
+            isinstance(params, dict)
+            and set(params) == {"points", "red", "green", "blue"}
+            and matches(params["points"], points)
+            and all(matches(params[channel], identity) for channel in ("red", "green", "blue"))
+        )
+    return False
+
+
 def _receipt(state: dict[str, Any], aliases: dict[str, int]) -> dict[str, Any]:
     reverse = {value: key for key, value in aliases.items()}
     fields = ("kind", "name", "bounds", "hasMask", "hasVectorMask", "opacity", "visible", "adjustment")
@@ -956,11 +1010,7 @@ def _run_steps(
             if type(layer) is not int or layer in aliases.values():
                 raise CliError("native adjustment returned an invalid layer identity")
             candidates = [item for item in state["layers"] if item["id"] == layer]
-            if (
-                len(candidates) != 1
-                or candidates[0].get("kind") != "Adjustment"
-                or "Curves" not in candidates[0].get("adjustment", {})
-            ):
+            if len(candidates) != 1 or not _curves_match(candidates[0], step["points"]):
                 raise CliError("native curves operation did not create a nondestructive adjustment layer")
             aliases[step["layer"]] = layer
             record["layer"] = step["layer"]
