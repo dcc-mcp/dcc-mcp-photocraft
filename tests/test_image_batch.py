@@ -77,7 +77,21 @@ for line in sys.stdin:
  if method=='initialize':
   if mode=='timeout_initialize':time.sleep(10)
   if mode=='oversized':print('x'*9000000,flush=True);continue
-  value={'protocolVersion':'2025-06-18','capabilities':{'tools':{}},'serverInfo':{'name':'fake','version':'future'}}
+  value={'protocolVersion':'2025-06-18','capabilities':{'tools':{}},'serverInfo':{'name':'photocraft','version':'0.15.1'}}
+  if mode=='wrong_protocol':value['protocolVersion']='2099-01-01'
+  if mode=='missing_protocol':del value['protocolVersion']
+  if mode=='missing_identity':del value['serverInfo']
+  if mode=='wrong_identity':value['serverInfo']['name']='unrelated-editor'
+  if mode=='malformed_identity':value['serverInfo']=[]
+  if mode=='missing_version':del value['serverInfo']['version']
+  if mode=='malformed_version':value['serverInfo']['version']='future'
+  if mode=='numeric_version':value['serverInfo']['version']=15
+  if mode=='prerelease_version':value['serverInfo']['version']='0.15.1-dev'
+  if mode=='old_version':value['serverInfo']['version']='0.1.9'
+  if mode=='oversized_version':value['serverInfo']['version']='9'*5000+'.2.0'
+  if mode=='minimum_version':value['serverInfo']['version']='0.2.0'
+  if mode=='malformed_capabilities':value['capabilities']=[]
+  if mode=='missing_tool_capability':value['capabilities']={}
  elif method=='tools/list':
   tools=[]
   for name,props in schemas.items():
@@ -116,14 +130,35 @@ for line in sys.stdin:
    if mode=='timeout_command':time.sleep(10)
    if mode=='nested_error':value={'ok':True,'result':{'ok':False,'error':'private /sensitive/path'}}
    elif command=='layer.newAdjustmentLayer.curves':
-    layer={'id':next_id,'name':'Curves','kind':'Adjustment','hasMask':True,'visible':True,'opacity':1.0,'adjustment':{'Curves':{'points':p['points']}}}
+    identity=[[0,0],[255,255]]
+    adjustment={'kind':'curves','params':{'points':p['points'],'red':identity,'green':identity,'blue':identity}}
+    if mode=='legacy_curves':
+     curve=lambda points:[{'input':x/255,'output':y/255} for x,y in points]
+     adjustment={'Curves':{'master':curve(p['points']),'per_channel':[curve(identity)]*3,
+                          'space':'Rgb','black':[],'pencil':False}}
+    if mode=='wrong_curves_kind':adjustment['kind']='levels'
+    if mode=='wrong_curves_points':adjustment['params']['points']=[[0,0],[255,255]]
+    if mode=='unsupported_curves':adjustment['unsupported']=True
+    layer={'id':next_id,'name':'Curves','kind':'Adjustment','hasMask':True,'visible':True,
+           'opacity':1.0,'adjustment':adjustment}
     next_id+=1;state['layers'].insert(0,layer);value={'layer':layer['id']}
    elif command=='select.rect':state['hasSelection']=True;value={}
-   elif command=='select.deselect':state['hasSelection']=False;value={}
+   elif command=='select.deselect':
+    if mode=='mask_consumes_selection' and not state['hasSelection']:
+     text={'type':'text','text':'disabled: no selection private /sensitive/path'}
+     failed={'content':[text],'isError':True}
+     print(json.dumps({'jsonrpc':'2.0','id':q['id'],'result':failed}),flush=True)
+     continue
+    if mode!='deselect_ineffective':state['hasSelection']=False
+    value={}
    else:
     layer=next(x for x in state['layers'] if x['id']==p['layer'])
     if command=='layer.setProps':layer.update({k:v for k,v in p.items() if k!='layer'})
-    elif command=='layer.layerMask.revealSelection':layer['hasMask']=True
+    elif command=='layer.layerMask.revealSelection':
+     layer['hasMask']=mode!='mask_missing'
+     if mode=='mask_consumes_selection':state['hasSelection']=False
+     if mode=='mask_selection_unknown':del state['hasSelection']
+     if mode=='mask_identity_changed':layer['id']+=100
     value={'layer':layer['id']}
   elif name=='doc_save':
    (root/a['path']).write_text(json.dumps({'state':state,'pixels':base64.b64encode(pixels).decode()}));value={'path':a['path']}
@@ -182,6 +217,170 @@ def requests(fake_host):
     return [json.loads(line) for line in fake_host.log.read_text().splitlines()] if fake_host.log.exists() else []
 
 
+@pytest.mark.parametrize("mode", ["", "minimum_version"])
+def test_native_handshake_accepts_the_official_identity(fake_host, monkeypatch, mode):
+    monkeypatch.setenv("TEST_NATIVE_MODE", mode)
+    session = batch._NativeSession(fake_host.transport, fake_host.write, 5)
+    try:
+        session.discover([opening()])
+        assert session.native_identity == {
+            "name": "photocraft",
+            "version": "0.2.0" if mode == "minimum_version" else "0.15.1",
+            "protocolVersion": "2025-06-18",
+        }
+    finally:
+        session.close()
+    assert any(request["method"] == "tools/list" for request in requests(fake_host))
+    assert fake_host.processes[0].poll() is not None
+
+
+@pytest.mark.parametrize(
+    "mode, error",
+    [
+        ("wrong_protocol", "protocol version"),
+        ("missing_protocol", "protocol version"),
+        ("missing_identity", "server identity"),
+        ("wrong_identity", "server identity"),
+        ("malformed_identity", "server identity"),
+        ("missing_version", "server version"),
+        ("malformed_version", "server version"),
+        ("numeric_version", "server version"),
+        ("prerelease_version", "server version"),
+        ("old_version", "server version"),
+        ("oversized_version", "server version"),
+        ("malformed_capabilities", "tool capability"),
+        ("missing_tool_capability", "tool capability"),
+    ],
+)
+def test_native_handshake_rejects_before_tool_discovery(fake_host, monkeypatch, mode, error):
+    monkeypatch.setenv("TEST_NATIVE_MODE", mode)
+    session = batch._NativeSession(fake_host.transport, fake_host.write, 5)
+    try:
+        with pytest.raises(CliError, match=error):
+            session.discover([opening()])
+    finally:
+        session.close()
+    assert [request["method"] for request in requests(fake_host)] == ["initialize"]
+    assert fake_host.processes[0].poll() is not None
+
+
+@pytest.mark.parametrize("mode, deselects", [("", 1), ("mask_consumes_selection", 0)])
+def test_mask_creation_reads_back_selection_before_deselect(fake_host, monkeypatch, mode, deselects):
+    monkeypatch.setenv("TEST_NATIVE_MODE", mode)
+    steps = [opening(), operation("mask_rectangle", layer="base", x=0, y=0, width=4, height=4, ellipse=True)]
+    inputs = {"original.png": {"stage": "original.png", "pixels": {"width": 4, "height": 4}}}
+    report = {"steps": [], "completed_steps": 0}
+    session = batch._NativeSession(fake_host.transport, fake_host.read, 5)
+    try:
+        session.discover(steps)
+        batch._run_steps(session, steps, inputs, {}, -1, report)
+        state = session.call("doc_inspect", {"index": 0})
+        assert state["hasSelection"] is False and state["layers"][0]["hasMask"] is True
+    finally:
+        session.close()
+    assert report["completed_steps"] == 2
+    wire = requests(fake_host)
+    command_ids = [q["params"]["arguments"]["id"] for q in wire if q["params"].get("name") == "command_run"]
+    assert command_ids.count("select.deselect") == deselects
+    assert command_ids.count("layer.layerMask.revealSelection") == 1
+
+
+@pytest.mark.parametrize(
+    "mode, error",
+    [
+        ("mask_missing", "did not produce an owned mask"),
+        ("mask_selection_unknown", "known selection state"),
+        ("mask_identity_changed", "owned layer identities"),
+        ("deselect_ineffective", "selection state changed"),
+    ],
+)
+def test_mask_creation_requires_owned_mask_and_cleared_selection(fake_host, monkeypatch, mode, error):
+    monkeypatch.setenv("TEST_NATIVE_MODE", mode)
+    steps = [opening(), operation("mask_rectangle", layer="base", x=0, y=0, width=4, height=4)]
+    inputs = {"original.png": {"stage": "original.png", "pixels": {"width": 4, "height": 4}}}
+    report = {"steps": [], "completed_steps": 0}
+    session = batch._NativeSession(fake_host.transport, fake_host.read, 5)
+    try:
+        session.discover(steps)
+        with pytest.raises(CliError, match=error):
+            batch._run_steps(session, steps, inputs, {}, -1, report)
+    finally:
+        session.close()
+    assert report["completed_steps"] == 1
+    assert report["failed_step"] == 2 and report["mutation_possible"] is True
+    assert fake_host.processes[0].poll() is not None
+
+
+def test_native_command_failure_reports_only_reviewed_identifier(fake_host, monkeypatch):
+    monkeypatch.setenv("TEST_NATIVE_MODE", "nested_error")
+    session = batch._NativeSession(fake_host.transport, fake_host.read, 5)
+    try:
+        session.discover([opening(), operation("set_layer", layer="base", visible=False)])
+        with pytest.raises(CliError, match="native command layer.setProps failed; do not replay") as failure:
+            session.command("layer.setProps", {"layer": 1, "visible": False})
+        assert "sensitive" not in str(failure.value)
+    finally:
+        session.close()
+
+
+@pytest.mark.parametrize("mode", ["", "legacy_curves"])
+def test_curves_creation_accepts_reviewed_native_readback_shapes(fake_host, monkeypatch, mode):
+    monkeypatch.setenv("TEST_NATIVE_MODE", mode)
+    steps = [opening(), operation("curves", layer="grade", points=[[0, 0], [128, 155], [255, 255]])]
+    inputs = {"original.png": {"stage": "original.png", "pixels": {"width": 4, "height": 4}}}
+    report = {"steps": [], "completed_steps": 0}
+    session = batch._NativeSession(fake_host.transport, fake_host.read, 5)
+    try:
+        session.discover(steps)
+        batch._run_steps(session, steps, inputs, {}, -1, report)
+    finally:
+        session.close()
+    assert report["completed_steps"] == 2
+    assert report["steps"][1]["layer"] == "grade"
+
+
+@pytest.mark.parametrize("mode", ["wrong_curves_kind", "wrong_curves_points", "unsupported_curves"])
+def test_curves_creation_rejects_unknown_or_changed_adjustment(fake_host, monkeypatch, mode):
+    monkeypatch.setenv("TEST_NATIVE_MODE", mode)
+    steps = [opening(), operation("curves", layer="grade", points=[[0, 0], [128, 155], [255, 255]])]
+    inputs = {"original.png": {"stage": "original.png", "pixels": {"width": 4, "height": 4}}}
+    report = {"steps": [], "completed_steps": 0}
+    session = batch._NativeSession(fake_host.transport, fake_host.read, 5)
+    try:
+        session.discover(steps)
+        with pytest.raises(CliError, match="nondestructive adjustment layer"):
+            batch._run_steps(session, steps, inputs, {}, -1, report)
+    finally:
+        session.close()
+    assert report["completed_steps"] == 1 and report["failed_step"] == 2
+    assert report["mutation_possible"] is True
+
+
+@pytest.mark.parametrize(
+    "adjustment",
+    [
+        "Curves",
+        {"Curves": {"points": [[0, 0], [255, 255]]}},
+        {"kind": "curves", "params": {}},
+        {"kind": "curves", "params": {"points": [[0, 0], [255, 255]]}, "unsupported": True},
+        {
+            "kind": "curves",
+            "params": {"points": [[0, 0], [255, True]], "red": [], "green": [], "blue": []},
+        },
+        {
+            "kind": "curves",
+            "params": {"points": [[0, 0], [255, 10**1000]], "red": [], "green": [], "blue": []},
+        },
+        {
+            "kind": "curves",
+            "params": {"points": [[0, 0], [255, 255]], "red": [], "green": [], "blue": []},
+        },
+    ],
+)
+def test_curves_readback_rejects_unreviewed_shapes_and_parameters(adjustment):
+    assert not batch._curves_match({"kind": "Adjustment", "adjustment": adjustment}, [[0, 0], [255, 255]])
+
+
 @SECURE
 def test_full_owned_workflow_and_rebind(fake_host):
     steps = [
@@ -203,6 +402,7 @@ def test_full_owned_workflow_and_rebind(fake_host):
     original = (fake_host.read / "original.png").read_bytes()
     report = batch.execute_image_batch(fake_host.transport, steps)
     assert report["ok"], report
+    assert report["native_mcp"]["version"] == "0.15.1"
     assert report["completed_steps"] == len(steps)
     assert [item["path"] for item in report["outputs"]] == ["editable.pcraft", "result.png"]
     assert report["outputs"][1]["pixels"]["rgba_sha256"] == hashlib.sha256(bytes([12, 34, 56, 255]) * 16).hexdigest()

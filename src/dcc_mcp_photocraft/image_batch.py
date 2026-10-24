@@ -13,6 +13,7 @@ import json
 import math
 import os
 import queue
+import re
 import stat
 import struct
 import subprocess
@@ -41,6 +42,8 @@ MAX_REPLY_BYTES = 8 * 1024 * 1024
 MAX_TOTAL_REPLY_BYTES = 64 * 1024 * 1024
 MAX_DURATION_SECS = 120.0
 MAX_LAYERS = 16
+MCP_PROTOCOL_VERSION = "2025-06-18"
+MIN_NATIVE_VERSION = (0, 2, 0)
 _ALIAS = {"type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,47}$"}
 _PATH = {"type": "string", "minLength": 1, "maxLength": 240}
 _COORD = {"type": "number", "minimum": 0, "maximum": MAX_DIMENSION}
@@ -428,6 +431,7 @@ class _NativeSession:
         self.buffer = b""
         self.poisoned = False
         self.schemas: dict[str, Any] = {}
+        self.native_identity: dict[str, str] = {}
         self.process = subprocess.Popen(
             [transport.binary, "mcp", "--automation-read-root", str(stage), "--automation-write-root", str(stage)],
             stdin=subprocess.PIPE,
@@ -530,13 +534,29 @@ class _NativeSession:
         initialized = self.rpc(
             "initialize",
             {
-                "protocolVersion": "2025-06-18",
+                "protocolVersion": MCP_PROTOCOL_VERSION,
                 "capabilities": {},
                 "clientInfo": {"name": "dcc-mcp-photocraft", "version": "1"},
             },
         )
-        if not isinstance(initialized, dict) or not isinstance(initialized.get("capabilities", {}).get("tools"), dict):
+        capabilities = initialized.get("capabilities") if isinstance(initialized, dict) else None
+        if not isinstance(capabilities, dict) or not isinstance(capabilities.get("tools"), dict):
             raise CliError("native MCP tool capability is unavailable")
+        if initialized.get("protocolVersion") != MCP_PROTOCOL_VERSION:
+            raise CliError("native MCP protocol version is incompatible")
+        identity = initialized.get("serverInfo")
+        if not isinstance(identity, dict) or identity.get("name") != "photocraft":
+            raise CliError("native MCP server identity is incompatible")
+        version = identity.get("version")
+        parsed = (
+            re.fullmatch(r"(0|[1-9][0-9]{0,5})\.(0|[1-9][0-9]{0,5})\.(0|[1-9][0-9]{0,5})", version)
+            if isinstance(version, str)
+            else None
+        )
+        if parsed is None or tuple(map(int, parsed.groups())) < MIN_NATIVE_VERSION:
+            raise CliError("native MCP server version is unsupported; PhotoCraft 0.2.0 or newer is required")
+        # Self-reported compatibility evidence, not binary provenance or release qualification.
+        self.native_identity = {"name": "photocraft", "version": version, "protocolVersion": MCP_PROTOCOL_VERSION}
         self.rpc("notifications/initialized", {}, notification=True)
         catalog, cursor = [], None
         for _ in range(8):
@@ -626,7 +646,13 @@ class _NativeSession:
         return value
 
     def command(self, name: str, params: dict[str, Any]) -> Any:
-        result = self.call("command_run", {"id": name, "params": params, "wait": True})
+        try:
+            result = self.call("command_run", {"id": name, "params": params, "wait": True})
+        except CliError as exc:
+            # Only adapter-owned identifiers are public diagnostics; native messages may contain paths.
+            reviewed = name if any(name in commands for commands in _COMMANDS.values()) else "unreviewed"
+            outcome = "deadline exceeded" if self.poisoned and "deadline" in str(exc) else "failed"
+            raise CliError(f"native command {reviewed} {outcome}; do not replay") from exc
         if isinstance(result, dict) and "job" in result:
             raise CliError("native command unexpectedly started a background job; do not replay")
         return result
@@ -784,6 +810,60 @@ def _signature(state: dict[str, Any]) -> list[dict[str, Any]]:
     return [{key: layer.get(key) for key in fields} for layer in state["layers"]]
 
 
+def _curves_match(layer: dict[str, Any], points: list[list[float]]) -> bool:
+    """Recognize only the reviewed internal-enum and command-parameter Curves readbacks."""
+    if layer.get("kind") != "Adjustment":
+        return False
+    adjustment = layer.get("adjustment")
+    if not isinstance(adjustment, dict):
+        return False
+
+    def matches(actual: Any, expected: list[list[float]], *, internal: bool = False) -> bool:
+        if not isinstance(actual, list) or len(actual) != len(expected):
+            return False
+        for pair, target in zip(actual, expected):
+            if internal:
+                if not isinstance(pair, dict) or set(pair) != {"input", "output"}:
+                    return False
+                pair = [pair["input"], pair["output"]]
+            if not isinstance(pair, list) or len(pair) != 2:
+                return False
+            for number, value in zip(pair, target):
+                scale = 255 if internal else 1
+                if type(number) not in {int, float} or not 0 <= number <= 255 / scale:
+                    return False
+                if not math.isfinite(number) or not math.isclose(number * scale, value, abs_tol=0.011):
+                    return False
+        return True
+
+    identity = [[0, 0], [255, 255]]
+    if set(adjustment) == {"Curves"}:
+        params = adjustment["Curves"]
+        if not isinstance(params, dict) or not {"master", "per_channel"} <= set(params):
+            return False
+        if set(params) - {"master", "per_channel", "space", "black", "pencil"}:
+            return False
+        channels = params["per_channel"]
+        return (
+            params.get("space", "Rgb") == "Rgb"
+            and params.get("pencil", False) is False
+            and params.get("black", []) == []
+            and matches(params["master"], points, internal=True)
+            and isinstance(channels, list)
+            and len(channels) == 3
+            and all(matches(channel, identity, internal=True) for channel in channels)
+        )
+    if set(adjustment) == {"kind", "params"} and adjustment["kind"] == "curves":
+        params = adjustment["params"]
+        return (
+            isinstance(params, dict)
+            and set(params) == {"points", "red", "green", "blue"}
+            and matches(params["points"], points)
+            and all(matches(params[channel], identity) for channel in ("red", "green", "blue"))
+        )
+    return False
+
+
 def _receipt(state: dict[str, Any], aliases: dict[str, int]) -> dict[str, Any]:
     reverse = {value: key for key, value in aliases.items()}
     fields = ("kind", "name", "bounds", "hasMask", "hasVectorMask", "opacity", "visible", "adjustment")
@@ -807,13 +887,18 @@ def _check_session(session: _NativeSession, expected: int) -> None:
         raise CliError("native active-document identity changed")
 
 
-def _check_owned(session: _NativeSession, aliases: dict[str, int], width: int, height: int) -> None:
+def _check_owned(
+    session: _NativeSession, aliases: dict[str, int], width: int, height: int, *, allow_selection: bool = False
+) -> dict[str, Any]:
     _check_session(session, 1)
     state = _inspection(session)
     if (state.get("width"), state.get("height")) != (width, height):
         raise CliError("owned document dimensions changed unexpectedly")
-    if {layer["id"] for layer in state["layers"]} != set(aliases.values()) or state.get("hasSelection"):
+    if {layer["id"] for layer in state["layers"]} != set(aliases.values()) or (
+        state.get("hasSelection") and not allow_selection
+    ):
         raise CliError("owned layer identities or selection state changed unexpectedly")
+    return state
 
 
 def _run_steps(
@@ -897,7 +982,17 @@ def _run_steps(
                 "select.rect", {key: step[key] for key in ("x", "y", "width", "height", "ellipse") if key in step}
             )
             session.command("layer.layerMask.revealSelection", {"layer": aliases[step["layer"]]})
-            session.command("select.deselect", {})
+            state = _check_owned(session, aliases, width, height, allow_selection=True)
+            target = next(layer for layer in state["layers"] if layer["id"] == aliases[step["layer"]])
+            if target.get("hasMask") is not True or type(state.get("hasSelection")) is not bool:
+                raise CliError("native mask creation did not produce an owned mask with a known selection state")
+            # New hosts consume the selection in revealSelection; older hosts retain it.
+            if state["hasSelection"]:
+                session.command("select.deselect", {})
+            state = _check_owned(session, aliases, width, height)
+            target = next(layer for layer in state["layers"] if layer["id"] == aliases[step["layer"]])
+            if target.get("hasMask") is not True or state.get("hasSelection") is not False:
+                raise CliError("native mask readback did not preserve the owned mask and clear its selection")
         elif op == "set_mask":
             state = _inspection(session)
             target = next(layer for layer in state["layers"] if layer["id"] == aliases[step["layer"]])
@@ -915,11 +1010,7 @@ def _run_steps(
             if type(layer) is not int or layer in aliases.values():
                 raise CliError("native adjustment returned an invalid layer identity")
             candidates = [item for item in state["layers"] if item["id"] == layer]
-            if (
-                len(candidates) != 1
-                or candidates[0].get("kind") != "Adjustment"
-                or "Curves" not in candidates[0].get("adjustment", {})
-            ):
+            if len(candidates) != 1 or not _curves_match(candidates[0], step["points"]):
                 raise CliError("native curves operation did not create a nondestructive adjustment layer")
             aliases[step["layer"]] = layer
             record["layer"] = step["layer"]
@@ -1092,6 +1183,7 @@ def execute_image_batch(transport: CliTransport, steps: Any) -> dict[str, Any]:
         try:
             session = _NativeSession(transport, stage, duration)
             session.discover(prepared)
+            report["native_mcp"] = session.native_identity
             _run_steps(session, prepared, inputs, outputs, stage_fd, report)
             session.close()
             session = None

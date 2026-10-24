@@ -26,7 +26,15 @@ validation plus checks of live command existence and documented parameters.
 - Only one document is open at a time. Callers use symbolic document/layer aliases,
   never ambient session indices or arbitrary layer IDs.
 - Placement is an embedded editable Smart Object; masks and Curves stay editable.
+- Mask creation reads the owned document back before clearing its selection.
+  Newer PhotoCraft releases consume that selection while creating the mask;
+  older releases retain it. Deselect only a still-present selection, then
+  verify the owned mask remains and the selection is absent.
 - Native revision values can reset and session indices renumber after close.
+- Curves readback accepts only the reviewed internal `Curves` enum or the newer
+  `kind: curves` command-parameter summary, checking requested master points and
+  identity color channels. Unknown schemas or changed curve values are rejected;
+  the saved native project retains its original format.
   Reopen is limited to an unchanged native save from this same batch. Saved layer
   signatures are verified before rebinding aliases to reopened IDs.
 - Native save/export can overwrite files upstream. This adapter instead reserves

@@ -53,22 +53,28 @@ def _which(binary: str) -> Path | None:
 
 def _search_dirs() -> list[Path]:
     """Per-platform directories where PhotoCraft packages install the binaries."""
+    from .launcher import search_directories
+
     home = Path.home()
     if sys.platform == "win32":
         roots = [
             Path(os.environ.get("LOCALAPPDATA", home / "AppData" / "Local")),
             Path(os.environ.get("PROGRAMFILES", "C:\\Program Files")),
         ]
-        return [root / "PhotoCraft" for root in roots] + [root / "PhotoCraft" / "bin" for root in roots]
+        return (
+            [root / "PhotoCraft" for root in roots]
+            + [root / "PhotoCraft" / "bin" for root in roots]
+            + search_directories()
+        )
 
     if sys.platform == "darwin":
         return [
             Path("/Applications/PhotoCraft.app/Contents/MacOS"),
             home / "Applications/PhotoCraft.app/Contents/MacOS",
             Path("/usr/local/bin"),
-        ]
+        ] + search_directories()
 
-    return [Path("/usr/bin"), Path("/usr/local/bin"), home / ".local" / "bin"]
+    return [Path("/usr/bin"), Path("/usr/local/bin"), home / ".local" / "bin"] + search_directories()
 
 
 def _find_in_search_dirs(binary: str) -> Path | None:
