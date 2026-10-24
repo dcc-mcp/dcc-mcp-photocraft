@@ -133,11 +133,22 @@ for line in sys.stdin:
     layer={'id':next_id,'name':'Curves','kind':'Adjustment','hasMask':True,'visible':True,'opacity':1.0,'adjustment':{'Curves':{'points':p['points']}}}
     next_id+=1;state['layers'].insert(0,layer);value={'layer':layer['id']}
    elif command=='select.rect':state['hasSelection']=True;value={}
-   elif command=='select.deselect':state['hasSelection']=False;value={}
+   elif command=='select.deselect':
+    if mode=='mask_consumes_selection' and not state['hasSelection']:
+     text={'type':'text','text':'disabled: no selection private /sensitive/path'}
+     failed={'content':[text],'isError':True}
+     print(json.dumps({'jsonrpc':'2.0','id':q['id'],'result':failed}),flush=True)
+     continue
+    if mode!='deselect_ineffective':state['hasSelection']=False
+    value={}
    else:
     layer=next(x for x in state['layers'] if x['id']==p['layer'])
     if command=='layer.setProps':layer.update({k:v for k,v in p.items() if k!='layer'})
-    elif command=='layer.layerMask.revealSelection':layer['hasMask']=True
+    elif command=='layer.layerMask.revealSelection':
+     layer['hasMask']=mode!='mask_missing'
+     if mode=='mask_consumes_selection':state['hasSelection']=False
+     if mode=='mask_selection_unknown':del state['hasSelection']
+     if mode=='mask_identity_changed':layer['id']+=100
     value={'layer':layer['id']}
   elif name=='doc_save':
    (root/a['path']).write_text(json.dumps({'state':state,'pixels':base64.b64encode(pixels).decode()}));value={'path':a['path']}
@@ -241,6 +252,65 @@ def test_native_handshake_rejects_before_tool_discovery(fake_host, monkeypatch, 
         session.close()
     assert [request["method"] for request in requests(fake_host)] == ["initialize"]
     assert fake_host.processes[0].poll() is not None
+
+
+@pytest.mark.parametrize("mode, deselects", [("", 1), ("mask_consumes_selection", 0)])
+def test_mask_creation_reads_back_selection_before_deselect(fake_host, monkeypatch, mode, deselects):
+    monkeypatch.setenv("TEST_NATIVE_MODE", mode)
+    steps = [opening(), operation("mask_rectangle", layer="base", x=0, y=0, width=4, height=4, ellipse=True)]
+    inputs = {"original.png": {"stage": "original.png", "pixels": {"width": 4, "height": 4}}}
+    report = {"steps": [], "completed_steps": 0}
+    session = batch._NativeSession(fake_host.transport, fake_host.read, 5)
+    try:
+        session.discover(steps)
+        batch._run_steps(session, steps, inputs, {}, -1, report)
+        state = session.call("doc_inspect", {"index": 0})
+        assert state["hasSelection"] is False and state["layers"][0]["hasMask"] is True
+    finally:
+        session.close()
+    assert report["completed_steps"] == 2
+    wire = requests(fake_host)
+    command_ids = [q["params"]["arguments"]["id"] for q in wire if q["params"].get("name") == "command_run"]
+    assert command_ids.count("select.deselect") == deselects
+    assert command_ids.count("layer.layerMask.revealSelection") == 1
+
+
+@pytest.mark.parametrize(
+    "mode, error",
+    [
+        ("mask_missing", "did not produce an owned mask"),
+        ("mask_selection_unknown", "known selection state"),
+        ("mask_identity_changed", "owned layer identities"),
+        ("deselect_ineffective", "selection state changed"),
+    ],
+)
+def test_mask_creation_requires_owned_mask_and_cleared_selection(fake_host, monkeypatch, mode, error):
+    monkeypatch.setenv("TEST_NATIVE_MODE", mode)
+    steps = [opening(), operation("mask_rectangle", layer="base", x=0, y=0, width=4, height=4)]
+    inputs = {"original.png": {"stage": "original.png", "pixels": {"width": 4, "height": 4}}}
+    report = {"steps": [], "completed_steps": 0}
+    session = batch._NativeSession(fake_host.transport, fake_host.read, 5)
+    try:
+        session.discover(steps)
+        with pytest.raises(CliError, match=error):
+            batch._run_steps(session, steps, inputs, {}, -1, report)
+    finally:
+        session.close()
+    assert report["completed_steps"] == 1
+    assert report["failed_step"] == 2 and report["mutation_possible"] is True
+    assert fake_host.processes[0].poll() is not None
+
+
+def test_native_command_failure_reports_only_reviewed_identifier(fake_host, monkeypatch):
+    monkeypatch.setenv("TEST_NATIVE_MODE", "nested_error")
+    session = batch._NativeSession(fake_host.transport, fake_host.read, 5)
+    try:
+        session.discover([opening(), operation("set_layer", layer="base", visible=False)])
+        with pytest.raises(CliError, match="native command layer.setProps failed; do not replay") as failure:
+            session.command("layer.setProps", {"layer": 1, "visible": False})
+        assert "sensitive" not in str(failure.value)
+    finally:
+        session.close()
 
 
 @SECURE

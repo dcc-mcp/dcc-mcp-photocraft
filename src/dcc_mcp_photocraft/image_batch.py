@@ -646,7 +646,13 @@ class _NativeSession:
         return value
 
     def command(self, name: str, params: dict[str, Any]) -> Any:
-        result = self.call("command_run", {"id": name, "params": params, "wait": True})
+        try:
+            result = self.call("command_run", {"id": name, "params": params, "wait": True})
+        except CliError as exc:
+            # Only adapter-owned identifiers are public diagnostics; native messages may contain paths.
+            reviewed = name if any(name in commands for commands in _COMMANDS.values()) else "unreviewed"
+            outcome = "deadline exceeded" if self.poisoned and "deadline" in str(exc) else "failed"
+            raise CliError(f"native command {reviewed} {outcome}; do not replay") from exc
         if isinstance(result, dict) and "job" in result:
             raise CliError("native command unexpectedly started a background job; do not replay")
         return result
@@ -827,13 +833,18 @@ def _check_session(session: _NativeSession, expected: int) -> None:
         raise CliError("native active-document identity changed")
 
 
-def _check_owned(session: _NativeSession, aliases: dict[str, int], width: int, height: int) -> None:
+def _check_owned(
+    session: _NativeSession, aliases: dict[str, int], width: int, height: int, *, allow_selection: bool = False
+) -> dict[str, Any]:
     _check_session(session, 1)
     state = _inspection(session)
     if (state.get("width"), state.get("height")) != (width, height):
         raise CliError("owned document dimensions changed unexpectedly")
-    if {layer["id"] for layer in state["layers"]} != set(aliases.values()) or state.get("hasSelection"):
+    if {layer["id"] for layer in state["layers"]} != set(aliases.values()) or (
+        state.get("hasSelection") and not allow_selection
+    ):
         raise CliError("owned layer identities or selection state changed unexpectedly")
+    return state
 
 
 def _run_steps(
@@ -917,7 +928,17 @@ def _run_steps(
                 "select.rect", {key: step[key] for key in ("x", "y", "width", "height", "ellipse") if key in step}
             )
             session.command("layer.layerMask.revealSelection", {"layer": aliases[step["layer"]]})
-            session.command("select.deselect", {})
+            state = _check_owned(session, aliases, width, height, allow_selection=True)
+            target = next(layer for layer in state["layers"] if layer["id"] == aliases[step["layer"]])
+            if target.get("hasMask") is not True or type(state.get("hasSelection")) is not bool:
+                raise CliError("native mask creation did not produce an owned mask with a known selection state")
+            # New hosts consume the selection in revealSelection; older hosts retain it.
+            if state["hasSelection"]:
+                session.command("select.deselect", {})
+            state = _check_owned(session, aliases, width, height)
+            target = next(layer for layer in state["layers"] if layer["id"] == aliases[step["layer"]])
+            if target.get("hasMask") is not True or state.get("hasSelection") is not False:
+                raise CliError("native mask readback did not preserve the owned mask and clear its selection")
         elif op == "set_mask":
             state = _inspection(session)
             target = next(layer for layer in state["layers"] if layer["id"] == aliases[step["layer"]])
