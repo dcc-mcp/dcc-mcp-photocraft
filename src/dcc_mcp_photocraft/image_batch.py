@@ -13,6 +13,7 @@ import json
 import math
 import os
 import queue
+import re
 import stat
 import struct
 import subprocess
@@ -41,6 +42,8 @@ MAX_REPLY_BYTES = 8 * 1024 * 1024
 MAX_TOTAL_REPLY_BYTES = 64 * 1024 * 1024
 MAX_DURATION_SECS = 120.0
 MAX_LAYERS = 16
+MCP_PROTOCOL_VERSION = "2025-06-18"
+MIN_NATIVE_VERSION = (0, 2, 0)
 _ALIAS = {"type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,47}$"}
 _PATH = {"type": "string", "minLength": 1, "maxLength": 240}
 _COORD = {"type": "number", "minimum": 0, "maximum": MAX_DIMENSION}
@@ -428,6 +431,7 @@ class _NativeSession:
         self.buffer = b""
         self.poisoned = False
         self.schemas: dict[str, Any] = {}
+        self.native_identity: dict[str, str] = {}
         self.process = subprocess.Popen(
             [transport.binary, "mcp", "--automation-read-root", str(stage), "--automation-write-root", str(stage)],
             stdin=subprocess.PIPE,
@@ -530,13 +534,29 @@ class _NativeSession:
         initialized = self.rpc(
             "initialize",
             {
-                "protocolVersion": "2025-06-18",
+                "protocolVersion": MCP_PROTOCOL_VERSION,
                 "capabilities": {},
                 "clientInfo": {"name": "dcc-mcp-photocraft", "version": "1"},
             },
         )
-        if not isinstance(initialized, dict) or not isinstance(initialized.get("capabilities", {}).get("tools"), dict):
+        capabilities = initialized.get("capabilities") if isinstance(initialized, dict) else None
+        if not isinstance(capabilities, dict) or not isinstance(capabilities.get("tools"), dict):
             raise CliError("native MCP tool capability is unavailable")
+        if initialized.get("protocolVersion") != MCP_PROTOCOL_VERSION:
+            raise CliError("native MCP protocol version is incompatible")
+        identity = initialized.get("serverInfo")
+        if not isinstance(identity, dict) or identity.get("name") != "photocraft":
+            raise CliError("native MCP server identity is incompatible")
+        version = identity.get("version")
+        parsed = (
+            re.fullmatch(r"(0|[1-9][0-9]{0,5})\.(0|[1-9][0-9]{0,5})\.(0|[1-9][0-9]{0,5})", version)
+            if isinstance(version, str)
+            else None
+        )
+        if parsed is None or tuple(map(int, parsed.groups())) < MIN_NATIVE_VERSION:
+            raise CliError("native MCP server version is unsupported; PhotoCraft 0.2.0 or newer is required")
+        # Self-reported compatibility evidence, not binary provenance or release qualification.
+        self.native_identity = {"name": "photocraft", "version": version, "protocolVersion": MCP_PROTOCOL_VERSION}
         self.rpc("notifications/initialized", {}, notification=True)
         catalog, cursor = [], None
         for _ in range(8):
@@ -1092,6 +1112,7 @@ def execute_image_batch(transport: CliTransport, steps: Any) -> dict[str, Any]:
         try:
             session = _NativeSession(transport, stage, duration)
             session.discover(prepared)
+            report["native_mcp"] = session.native_identity
             _run_steps(session, prepared, inputs, outputs, stage_fd, report)
             session.close()
             session = None

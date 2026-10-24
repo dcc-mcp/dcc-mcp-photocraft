@@ -30,6 +30,7 @@ ENV_VARS = (
     "PHOTOCRAFT_CONTROL_TOKEN_FILE",
     "PHOTOCRAFT_READ_ROOT",
     "PHOTOCRAFT_WRITE_ROOT",
+    "PHOTOCRAFT_LAUNCHER_DATA",
 )
 
 
@@ -97,7 +98,12 @@ def doctor_report() -> dict[str, Any]:
         "cli": _check_cli(status),
         "desktop_app": _check_app(status),
         "control_port": _check_control_port(),
-        "environment": {name: os.environ.get(name) for name in ENV_VARS},
+        "environment": {
+            name: (
+                "[redacted]" if name == "PHOTOCRAFT_CONTROL_TOKEN" and os.environ.get(name) else os.environ.get(name)
+            )
+            for name in ENV_VARS
+        },
     }
     errors = [name for name, check in checks.items() if isinstance(check, dict) and check.get("status") == "error"]
     return {

@@ -77,7 +77,21 @@ for line in sys.stdin:
  if method=='initialize':
   if mode=='timeout_initialize':time.sleep(10)
   if mode=='oversized':print('x'*9000000,flush=True);continue
-  value={'protocolVersion':'2025-06-18','capabilities':{'tools':{}},'serverInfo':{'name':'fake','version':'future'}}
+  value={'protocolVersion':'2025-06-18','capabilities':{'tools':{}},'serverInfo':{'name':'photocraft','version':'0.15.1'}}
+  if mode=='wrong_protocol':value['protocolVersion']='2099-01-01'
+  if mode=='missing_protocol':del value['protocolVersion']
+  if mode=='missing_identity':del value['serverInfo']
+  if mode=='wrong_identity':value['serverInfo']['name']='unrelated-editor'
+  if mode=='malformed_identity':value['serverInfo']=[]
+  if mode=='missing_version':del value['serverInfo']['version']
+  if mode=='malformed_version':value['serverInfo']['version']='future'
+  if mode=='numeric_version':value['serverInfo']['version']=15
+  if mode=='prerelease_version':value['serverInfo']['version']='0.15.1-dev'
+  if mode=='old_version':value['serverInfo']['version']='0.1.9'
+  if mode=='oversized_version':value['serverInfo']['version']='9'*5000+'.2.0'
+  if mode=='minimum_version':value['serverInfo']['version']='0.2.0'
+  if mode=='malformed_capabilities':value['capabilities']=[]
+  if mode=='missing_tool_capability':value['capabilities']={}
  elif method=='tools/list':
   tools=[]
   for name,props in schemas.items():
@@ -182,6 +196,53 @@ def requests(fake_host):
     return [json.loads(line) for line in fake_host.log.read_text().splitlines()] if fake_host.log.exists() else []
 
 
+@pytest.mark.parametrize("mode", ["", "minimum_version"])
+def test_native_handshake_accepts_the_official_identity(fake_host, monkeypatch, mode):
+    monkeypatch.setenv("TEST_NATIVE_MODE", mode)
+    session = batch._NativeSession(fake_host.transport, fake_host.write, 5)
+    try:
+        session.discover([opening()])
+        assert session.native_identity == {
+            "name": "photocraft",
+            "version": "0.2.0" if mode == "minimum_version" else "0.15.1",
+            "protocolVersion": "2025-06-18",
+        }
+    finally:
+        session.close()
+    assert any(request["method"] == "tools/list" for request in requests(fake_host))
+    assert fake_host.processes[0].poll() is not None
+
+
+@pytest.mark.parametrize(
+    "mode, error",
+    [
+        ("wrong_protocol", "protocol version"),
+        ("missing_protocol", "protocol version"),
+        ("missing_identity", "server identity"),
+        ("wrong_identity", "server identity"),
+        ("malformed_identity", "server identity"),
+        ("missing_version", "server version"),
+        ("malformed_version", "server version"),
+        ("numeric_version", "server version"),
+        ("prerelease_version", "server version"),
+        ("old_version", "server version"),
+        ("oversized_version", "server version"),
+        ("malformed_capabilities", "tool capability"),
+        ("missing_tool_capability", "tool capability"),
+    ],
+)
+def test_native_handshake_rejects_before_tool_discovery(fake_host, monkeypatch, mode, error):
+    monkeypatch.setenv("TEST_NATIVE_MODE", mode)
+    session = batch._NativeSession(fake_host.transport, fake_host.write, 5)
+    try:
+        with pytest.raises(CliError, match=error):
+            session.discover([opening()])
+    finally:
+        session.close()
+    assert [request["method"] for request in requests(fake_host)] == ["initialize"]
+    assert fake_host.processes[0].poll() is not None
+
+
 @SECURE
 def test_full_owned_workflow_and_rebind(fake_host):
     steps = [
@@ -203,6 +264,7 @@ def test_full_owned_workflow_and_rebind(fake_host):
     original = (fake_host.read / "original.png").read_bytes()
     report = batch.execute_image_batch(fake_host.transport, steps)
     assert report["ok"], report
+    assert report["native_mcp"]["version"] == "0.15.1"
     assert report["completed_steps"] == len(steps)
     assert [item["path"] for item in report["outputs"]] == ["editable.pcraft", "result.png"]
     assert report["outputs"][1]["pixels"]["rgba_sha256"] == hashlib.sha256(bytes([12, 34, 56, 255]) * 16).hexdigest()

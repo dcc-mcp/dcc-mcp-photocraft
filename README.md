@@ -6,6 +6,13 @@
 
 PhotoCraft adapter for the [DCC-MCP](https://github.com/dcc-mcp/dcc-mcp-core) ecosystem: lets AI agents inspect and drive [PhotoCraft](https://github.com/storytold/photocraft), the open-source image editor.
 
+The [Storytold product matrix](docs/storytold/products.md) separates 14 released
+creative/document apps and the official Launcher from libraries, placeholders,
+backends and older prototypes. This adapter remains the PhotoCraft integration;
+existing FilmCraft and PdfCraft adapters retain their own ownership.
+The [first integration slice](docs/storytold/integration-slice.md) records the
+actual launcher/runtime/desktop boundaries and cross-application handoff gates.
+
 ## Why this adapter exists when PhotoCraft already ships an MCP server
 
 **PhotoCraft includes its own MCP server** (`photocraft-cli mcp`), and its documentation shows how to register it directly with an agent. If that is all you need, use it — this package does not replace it.
@@ -23,6 +30,11 @@ What it deliberately does **not** do is reimplement PhotoCraft's command set. Th
 
 - Python 3.9 or newer
 - [PhotoCraft](https://github.com/storytold/photocraft) 0.2 or newer — only `photocraft-cli` is required; the desktop app is optional
+
+Typed image editing currently requires POSIX descriptor-relative no-follow file
+operations. Windows supports native catalog/document readback but rejects that
+editing batch before starting the native engine. Desktop presence or configured
+credentials do not establish a qualified live GUI session.
 
 ## Installation
 
@@ -62,6 +74,7 @@ Use dcc-mcp to summarize poster.pcraft.
 | --- | --- |
 | `PHOTOCRAFT_CLI` | Path to `photocraft-cli` when it is not on `PATH` |
 | `PHOTOCRAFT_APP` | Path to the desktop app binary when it is not on `PATH` |
+| `PHOTOCRAFT_LAUNCHER_DATA` | Optional data directory containing the official Launcher's `installed.json`, including portable installs |
 | `PHOTOCRAFT_CONTROL_PORT` | The port passed to `photocraft --control <port>`; enables UI actions |
 | `PHOTOCRAFT_CONTROL_TOKEN` | The control-channel bearer token |
 | `PHOTOCRAFT_CONTROL_TOKEN_FILE` | Path to a file holding the token; preferred, since it keeps the credential off the process command line |

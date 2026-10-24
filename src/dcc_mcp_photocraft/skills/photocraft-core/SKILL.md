@@ -81,3 +81,23 @@ control_call, GUI or Web editing is provided by this workflow. Actual native
 qualification is Linux x86_64 v0.8.2; discovery of another version is not testing.
 The native task uses current MCP tool schemas; engine params use reviewed local
 bounds because the host's engine catalog only has prose parameter descriptions.
+
+Before discovery or a document operation, the native image session requires the
+negotiated MCP protocol, the official `photocraft` server name and a stable
+version >=0.2.0. This is a compatibility check of self-reported identity, not
+binary provenance or qualification of every future release. Preserve the
+`native_mcp` receipt. Windows fails the image batch before native launch because
+the required descriptor-relative no-follow publication primitives are absent;
+use its separately tested catalog/document readback rather than replaying it.
+
+The adapter can discover native installs recorded by ArtCraft Launcher without
+starting either application. `PHOTOCRAFT_LAUNCHER_DATA` may identify the actual
+data folder containing `installed.json` for a portable launcher. Keep official
+installation/update authority with the launcher. A path is a hint, not a launch
+grant, artifact verification or a live desktop binding.
+
+For a cross-software showcase, preserve artifact checksums, observed PNG color
+metadata and decoded pixel readback. Untagged synthetic sRGB-intended samples
+require explicit sRGB interpretation in the consumer; they are not scene-linear
+EXR. FilmCraft, CAD/DCC and Nuke imports remain separate acceptance steps. A
+PhotoCraft `.pcraft` project is not Photoshop binary compatibility.

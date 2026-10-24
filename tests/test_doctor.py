@@ -121,6 +121,18 @@ def test_report_is_json_serializable(monkeypatch, tmp_path, clean_env):
     assert json.dumps(doctor.doctor_report())
 
 
+def test_full_doctor_and_cli_output_redact_control_token(monkeypatch, tmp_path, clean_env, capsys):
+    _no_binaries(monkeypatch, tmp_path)
+    token = "test-credential-do-not-disclose-" + "x" * 40
+    monkeypatch.setenv("PHOTOCRAFT_CONTROL_TOKEN", token)
+    monkeypatch.setenv("PHOTOCRAFT_CONTROL_PORT", "7878")
+    report = doctor.doctor_report()
+    assert token not in json.dumps(report)
+    assert report["checks"]["environment"]["PHOTOCRAFT_CONTROL_TOKEN"] == "[redacted]"
+    doctor.main(["--json"])
+    assert token not in capsys.readouterr().out
+
+
 def test_main_returns_zero_for_missing_host(monkeypatch, tmp_path, clean_env, capsys):
     _no_binaries(monkeypatch, tmp_path)
 

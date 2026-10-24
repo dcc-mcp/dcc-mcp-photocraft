@@ -58,7 +58,7 @@ def dump(path: Path, value: Any) -> None:
 
 
 def source_hashes() -> dict[str, str]:
-    files = [ROOT / "pyproject.toml", Path(__file__).resolve()]
+    files = [ROOT / "pyproject.toml", Path(__file__).resolve(), ROOT / "scripts" / "showcase_handoff.py"]
     files.extend(p for p in (ROOT / "src").rglob("*") if p.is_file() and "__pycache__" not in p.parts)
     return {str(p.relative_to(ROOT)): sha(p) for p in sorted(files)}
 
@@ -651,6 +651,11 @@ class Acceptance:
                 check["passed"] for check in self.report["checks"].values()
             )
             self.report["finished_utc"] = datetime.now(timezone.utc).isoformat()
+            if self.report["all_passed"]:
+                from showcase_handoff import write_handoff
+
+                write_handoff(self.output, synthetic=self.args.input_dir is None)
+                self.report["handoff_receipt"] = "handoff.json"
             report_path = self.output / "report.json"
             dump(report_path, self.report)
             # This separate manifest authenticates report.json without creating
