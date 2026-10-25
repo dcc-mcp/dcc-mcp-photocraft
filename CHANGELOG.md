@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/dcc-mcp/dcc-mcp-photocraft/compare/v0.2.0...v0.2.1) (2026-10-25)
+
+
+### Documentation
+
+* refresh the generated DCC-MCP host matrix pointer ([524678b](https://github.com/dcc-mcp/dcc-mcp-photocraft/commit/524678bcf343e6bcae0698eae1627cb09ce4c3ff))
+
 ## [0.2.0](https://github.com/dcc-mcp/dcc-mcp-photocraft/compare/v0.1.0...v0.2.0) (2026-10-17)
 
 
