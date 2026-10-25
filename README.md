@@ -6,6 +6,26 @@
 
 PhotoCraft adapter for the [DCC-MCP](https://github.com/dcc-mcp/dcc-mcp-core) ecosystem: lets AI agents inspect and drive [PhotoCraft](https://github.com/storytold/photocraft), the open-source image editor.
 
+<!-- dcc-mcp-coverage-pointer:start -->
+<!-- Generated from dcc-mcp-catalog.yml by scripts/generate_adapter_pointer.py in dcc-mcp/dcc-mcp-core. Do not edit by hand. -->
+## Part of the DCC-MCP host matrix
+
+**dcc-mcp-photocraft** — Experimental PhotoCraft adapter with native CLI discovery and a
+bounded headless image workflow; desktop and Web acceptance remain unqualified.
+
+It is one of **48 host adapters** in the DCC-MCP catalog. Every adapter speaks the same
+MCP protocol and builds on the same core runtime contract; each one exposes the tools
+its own host needs on top of that.
+
+- [All host adapters and install metadata](https://dcc-mcp.github.io/ecosystem)
+- [Host matrix on the core README](https://github.com/dcc-mcp/dcc-mcp-core#readme)
+- [Showcase](https://dcc-mcp.github.io/showcase)
+
+This block is generated from the catalog entry in
+[`dcc-mcp-catalog.yml`](https://github.com/dcc-mcp/dcc-mcp-core/blob/main/dcc-mcp-catalog.yml).
+Re-run the generator after changing the catalog.
+<!-- dcc-mcp-coverage-pointer:end -->
+
 ## Why this adapter exists when PhotoCraft already ships an MCP server
 
 **PhotoCraft includes its own MCP server** (`photocraft-cli mcp`), and its documentation shows how to register it directly with an agent. If that is all you need, use it — this package does not replace it.
