@@ -13,7 +13,7 @@ PhotoCraft adapter for the [DCC-MCP](https://github.com/dcc-mcp/dcc-mcp-core) ec
 **dcc-mcp-photocraft** — Experimental PhotoCraft adapter with native CLI discovery and a
 bounded headless image workflow; desktop and Web acceptance remain unqualified.
 
-It is one of **48 host adapters** in the DCC-MCP catalog. Every adapter speaks the same
+It is one of **49 host adapters** in the DCC-MCP catalog. Every adapter speaks the same
 MCP protocol and builds on the same core runtime contract; each one exposes the tools
 its own host needs on top of that.
 
